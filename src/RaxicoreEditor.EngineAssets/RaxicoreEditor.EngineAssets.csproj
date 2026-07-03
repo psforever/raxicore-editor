@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>RaxicoreEditor.EngineAssets</RootNamespace>
+    <AssemblyName>RaxicoreEditor.EngineAssets</AssemblyName>
+    <!-- Pure asset I/O: no UI or rendering dependencies, reusable for headless tooling. -->
+    <Description>Engine-derived game-asset format readers/writers (PACK, FLAT, UberMesh, ANIM, ADB, surface, LZO1), ported from the reference client's C++ implementation.</Description>
+  </PropertyGroup>
+
+</Project>
