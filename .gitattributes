@@ -1,0 +1,41 @@
+# Normalize line endings: Git stores LF, checks out native. Keep source as LF.
+* text=auto eol=lf
+
+# Explicit text types
+*.cs        text diff=csharp
+*.csproj    text
+*.slnx      text
+*.props     text
+*.axaml     text
+*.xaml      text
+*.json      text
+*.md        text
+*.txt       text
+*.manifest  text
+*.vert      text
+*.frag      text
+*.gitignore text
+*.gitattributes text
+
+# Scripts keep their platform endings
+*.sh   text eol=lf
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# Binary assets — never touch, never diff
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.spv  binary
+*.dll  binary
+*.pdb  binary
+*.dds  binary
+*.pak  binary
+*.fat  binary
+*.ubr  binary
+
+# Collapse generated files in PR diffs
+*.spv linguist-generated=true

@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <!-- Classic, explicit style: no top-level statements, no implicit global usings. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Features>strict</Features>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Authors>Raxicore Editor</Authors>
+    <Product>Raxicore Editor</Product>
+    <!-- Intended release license. All dependencies are MIT/Apache-2.0/OFL (no copyleft). -->
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Copyright>Copyright (c) 2026 Raxicore Editor contributors</Copyright>
+  </PropertyGroup>
+</Project>

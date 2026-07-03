@@ -1,0 +1,54 @@
+# ---- Build output ----
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Pp]ublish/
+artifacts/
+*.user
+*.suo
+*.userprefs
+
+# ---- .NET / MSBuild ----
+project.lock.json
+project.fragment.lock.json
+.msbuild/
+*.binlog
+*.nupkg
+*.snupkg
+
+# ---- Rider / JetBrains ----
+.idea/
+*.sln.iml
+*.DotSettings.user
+
+# ---- Visual Studio ----
+.vs/
+*.vsidx
+*.VC.db
+*.VC.VC.opendb
+
+# ---- VS Code ----
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+# ---- Test & coverage ----
+[Tt]est[Rr]esult*/
+coverage*.json
+*.coverage
+*.trx
+
+# ---- Runtime / Vulkan ----
+pipeline_cache.bin
+
+# ---- OS cruft ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Local / scratch ----
+*.log
+*.tmp
+scratch/
+.env

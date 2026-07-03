@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RaxicoreEditor.Editor/RaxicoreEditor.Editor.csproj" />
+    <Project Path="src/RaxicoreEditor.EngineAssets/RaxicoreEditor.EngineAssets.csproj" />
+  </Folder>
+</Solution>
