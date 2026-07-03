@@ -1,0 +1,76 @@
+.hero {
+  position: relative;
+  padding: 4.5rem 0 3.5rem;
+  overflow: hidden;
+  text-align: center;
+  isolation: isolate;
+}
+
+// The warpgate glow — the app's own icon, huge and blurred, slow-spinning behind the headline.
+// Purely decorative; hidden from screen readers.
+.hero__glow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 46rem;
+  height: 46rem;
+  transform: translate(-50%, -50%);
+  background: url("../img/logo-512.png") center / contain no-repeat;
+  opacity: 0.16;
+  filter: blur(2px);
+  animation: hero-spin 90s linear infinite;
+  z-index: -1;
+  pointer-events: none;
+}
+
+@keyframes hero-spin {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero__glow { animation: none; }
+}
+
+.hero__eyebrow {
+  font-family: $font-mono;
+  font-size: 0.8rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: $accent;
+  margin-bottom: 0.9rem;
+}
+
+.hero__title {
+  margin: 0 0 0.5rem;
+  font-size: clamp(2rem, 5vw, 3.4rem);
+  background: $empire-gradient;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 24px rgba($empire-blue, 0.35));
+}
+
+.hero__tagline {
+  font-size: 1.15rem;
+  color: $text-muted;
+  max-width: 40rem;
+  margin: 0 auto 2.2rem;
+}
+
+.hero__actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 2.6rem;
+}
+
+.hero__badges {
+  display: flex;
+  gap: 0.55rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 42rem;
+  margin: 0 auto;
+}

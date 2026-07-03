@@ -1,0 +1,142 @@
+// ---- Buttons ----------------------------------------------------------------------------------
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: $font-display;
+  font-weight: 700;
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.85rem 1.5rem;
+  border-radius: $radius-sm;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  border-bottom-width: 1px; // override the global <a> underline
+}
+
+.button--primary {
+  background: $empire-gradient;
+  color: #fff;
+  box-shadow: 0 6px 24px rgba($empire-blue, 0.35);
+
+  &:hover, &:focus-visible {
+    color: #fff;
+    transform: translateY(-1px);
+    box-shadow: 0 10px 30px rgba($empire-purple, 0.45);
+  }
+}
+
+.button--ghost {
+  background: rgba($text, 0.04);
+  border-color: $border;
+  color: $text;
+
+  &:hover, &:focus-visible {
+    color: $text;
+    border-color: $accent;
+    background: rgba($accent, 0.08);
+  }
+}
+
+// ---- Badges / pills -----------------------------------------------------------------------
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: $font-mono;
+  font-size: 0.76rem;
+  letter-spacing: 0.02em;
+  color: $text-muted;
+  background: $bg-inset;
+  border: 1px solid $border;
+  border-radius: 999px;
+  padding: 0.3rem 0.8rem;
+}
+
+.badge--accent {
+  color: $accent;
+  border-color: rgba($accent, 0.4);
+  background: rgba($accent, 0.08);
+}
+
+// ---- Feature / card grid -----------------------------------------------------------------
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr));
+  gap: 1.1rem;
+  margin: 1.6rem 0 2.4rem;
+}
+
+.card {
+  background: $bg-panel-alt;
+  border: 1px solid $border-soft;
+  border-radius: $radius-lg;
+  padding: 1.4rem 1.5rem;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+
+  &:hover {
+    border-color: rgba($accent, 0.45);
+    transform: translateY(-2px);
+    box-shadow: $shadow-glow;
+  }
+}
+
+.card__title {
+  font-family: $font-display;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: $text;
+  margin: 0 0 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+
+  &::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: $empire-gradient;
+    flex: none;
+  }
+}
+
+.card p:last-child { margin-bottom: 0; }
+.card p { color: $text-muted; font-size: 0.94rem; }
+
+// ---- Callouts -----------------------------------------------------------------------------
+.callout {
+  border: 1px solid rgba($warn, 0.4);
+  background: rgba($warn, 0.08);
+  border-radius: $radius-md;
+  padding: 1rem 1.3rem;
+  margin: 0 0 1.6rem;
+  color: $text;
+}
+
+.callout p:last-child { margin-bottom: 0; }
+
+.callout--accent {
+  border-color: rgba($accent, 0.4);
+  background: rgba($accent, 0.08);
+}
+
+// ---- Format status table dots ------------------------------------------------------------
+.status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: $success;
+  box-shadow: 0 0 8px rgba($success, 0.7);
+}
+
+// ---- Section header ----------------------------------------------------------------------
+.section-lead {
+  color: $text-muted;
+  font-size: 1.02rem;
+  max-width: 42rem;
+  margin: -0.4rem 0 1.8rem;
+}

@@ -1,0 +1,18 @@
+source "https://rubygems.org"
+
+# GitHub Pages builds this site with its own pinned `github-pages` gem server-side; depending on
+# it here too keeps a local `bundle exec jekyll serve` matching that environment as closely as
+# possible. If `github-pages` fails to install locally (a known executable-name clash between the
+# `sass` and `sass-embedded` gems on some platforms), a plain `gem install jekyll jekyll-seo-tag
+# jekyll-sitemap jekyll-feed` + `jekyll serve` works fine for local preview — this site only uses
+# that whitelisted plugin set.
+gem "github-pages", group: :jekyll_plugins
+
+group :jekyll_plugins do
+  gem "jekyll-seo-tag"
+  gem "jekyll-sitemap"
+  gem "jekyll-feed"
+end
+
+# Windows/JRuby platforms need this to run Jekyll's file watcher.
+gem "wdm", "~> 0.1", platforms: [:mingw, :x64_mingw, :mswin]

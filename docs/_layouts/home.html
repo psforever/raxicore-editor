@@ -1,0 +1,97 @@
+---
+layout: default
+---
+<div class="hero">
+  <div class="hero__glow" aria-hidden="true"></div>
+  <div class="container">
+    <p class="hero__eyebrow">// engine-derived asset toolkit</p>
+    <h1 class="hero__title">Raxicore Editor</h1>
+    <p class="hero__tagline">{{ site.description }}</p>
+    <div class="hero__actions">
+      <a class="button button--primary" href="https://github.com/{{ site.repository }}" target="_blank" rel="noopener">
+        View on GitHub
+      </a>
+      <a class="button button--ghost" href="{{ '/building/' | relative_url }}">
+        Build &amp; Run
+      </a>
+    </div>
+    <div class="hero__badges">
+      <span class="badge badge--accent">PACK</span>
+      <span class="badge badge--accent">FLAT</span>
+      <span class="badge badge--accent">UberMesh</span>
+      <span class="badge badge--accent">UberAnim</span>
+      <span class="badge badge--accent">ASCII DB</span>
+      <span class="badge badge--accent">Surface</span>
+      <span class="badge badge--accent">Map Manifest</span>
+      <span class="badge badge--accent">DDS</span>
+    </div>
+  </div>
+</div>
+
+<div class="page">
+  <div class="container">
+
+    <h2>What it does</h2>
+    <p class="section-lead">
+      Raxicore Editor opens the container formats an engine-derived client ships next to its
+      executable — archives, meshes, animations, textures, surfaces, and ASCII databases — and
+      renders, inspects, and edits them through a native Vulkan-backed 3D viewport.
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <p class="card__title">Asset browser</p>
+        <p>Mount a folder or open an archive straight into a role-grouped catalog — Continents,
+        Models, Animations, Textures, Surfaces, Databases, Audio — alongside the raw on-disk tree.
+        Archive contents load lazily.</p>
+      </div>
+      <div class="card">
+        <p class="card__title">Offscreen 3D viewport</p>
+        <p>A Silk.NET Vulkan renderer draws fully offscreen — no swapchain — and is composited into
+        the Avalonia UI via a <code>WriteableBitmap</code>, sidestepping windowed-surface and
+        device-loss crashes entirely.</p>
+      </div>
+      <div class="card">
+        <p class="card__title">Textured models</p>
+        <p>Every material resolves to its DDS texture automatically, with a per-material texture
+        picker and a one-click empire skin swap so vehicles aren't stuck on a single livery.</p>
+      </div>
+      <div class="card">
+        <p class="card__title">Animation playback</p>
+        <p>Plays both skinned and rigid mesh-on-bone animations. The clip database auto-loads from
+        the asset folder and is filtered to the clips that actually drive the selected model.</p>
+      </div>
+      <div class="card">
+        <p class="card__title">Full continents</p>
+        <p>Opens a continent container as placed, textured terrain plus its static scene objects —
+        bases, towers, trees, warpgates — resolved from the map manifest and the shared object
+        library.</p>
+      </div>
+      <div class="card">
+        <p class="card__title">Format tools</p>
+        <p>DDS/image preview, a paintable surface-type editor, structured ASCII-database table
+        views, live-validated text editing, a hex fallback, and OBJ export.</p>
+      </div>
+    </div>
+
+    <h2>Status</h2>
+    <p>
+      <span class="status-dot"></span>
+      A functional viewer/editor — browsing, 3D rendering, texture selection, animation playback,
+      and continent assembly all work today. Per-format re-pack (write-back) beyond the surface
+      editor and OBJ export is the in-progress edge. See the
+      <a href="{{ '/formats/' | relative_url }}">supported-formats reference</a> for exact
+      per-format read/write status.
+    </p>
+
+    <div class="callout">
+      <p>
+        <strong>You need your own copy of the engine-derived game assets.</strong> No game data is
+        included or distributed with this project or this site.
+      </p>
+    </div>
+
+    {{ content }}
+
+  </div>
+</div>

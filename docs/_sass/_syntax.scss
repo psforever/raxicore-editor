@@ -1,0 +1,14 @@
+// Minimal Rouge token theme tuned to the site's dark, blue-accented palette (covers the token
+// classes that actually appear in this site's shell/C#/YAML snippets).
+.highlight {
+  .c, .c1, .cm, .cs, .cp { color: $text-faint; font-style: italic; }         // comments
+  .s, .s1, .s2, .sb, .sc, .sd, .se, .sh, .si, .sx, .ss { color: #9be89a; }   // strings
+  .k, .kc, .kd, .kn, .kp, .kr, .kt { color: $accent; font-weight: 700; }     // keywords
+  .n, .na, .nb, .nc, .nd, .nf, .ni, .nl, .nn, .no, .nt, .nx { color: #bcd4ff; } // names
+  .m, .mf, .mh, .mi, .mo, .il { color: #f2b855; }                            // numbers
+  .o, .ow, .p { color: $text-muted; }                                       // operators/punct
+  .err { color: $empire-red; }
+  .gd { color: $empire-red; }   // diff-deleted
+  .gi { color: #9be89a; }       // diff-inserted
+  .gh { color: $accent; font-weight: 700; } // heading
+}

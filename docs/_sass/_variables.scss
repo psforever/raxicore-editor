@@ -1,0 +1,45 @@
+// Palette — grounded in two real sources, not invented:
+//  1. psforever.net's actual Material-for-MkDocs theme: data-md-color-primary="black" (header bg
+//     hsl(225,15%,9%) = #14151a), data-md-color-accent="indigo" (#526cfe).
+//  2. The empire-colour gradient sampled from the PSForever logo itself (blue -> purple -> red),
+//     the same gradient already used on the Raxicore Editor app icon.
+$bg-void:      #0a0b0f;  // page background — darker than the PSForever header for depth
+$bg-panel:     #14151a;  // PSForever's real header/primary-black background
+$bg-panel-alt: #191b22;  // slightly lifted panel (cards, code blocks)
+$bg-inset:     #0d0e13;  // recessed surfaces (code blocks, inputs)
+$border:       #262a35;
+$border-soft:  #1d2029;
+
+$text:         #e7e9f0;
+$text-muted:   #9aa3b7;
+$text-faint:   #6b7286;
+
+// PSForever's real accent, lightened slightly for AA contrast on a fully dark background
+// (their site is light-mode with only the header dark; ours is dark throughout).
+$accent:       #7d8dff;
+$accent-dim:   #526cfe; // the exact indigo PSForever uses
+
+// The empire gradient (NC blue / VS purple / TR red) — sampled directly from the psforever.net
+// logo — reserved for hero treatments, dividers, and the logo mark; not for body text/links.
+$empire-blue:   #1830e1;
+$empire-purple: #bc298c;
+$empire-red:    #dd1006;
+$empire-gradient: linear-gradient(120deg, $empire-blue 0%, $empire-purple 52%, $empire-red 100%);
+$empire-gradient-conic: conic-gradient(from 90deg, $empire-red, $empire-purple, $empire-blue, $empire-red);
+
+$success: #34d399;
+$warn:    #f2b855;
+
+// ---- Type ----
+$font-display: "Orbitron", "Segoe UI", sans-serif;
+$font-body:    "Exo 2", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+$font-mono:    "Share Tech Mono", "Cascadia Code", Consolas, monospace;
+
+// ---- Layout ----
+$content-width: 72rem;
+$radius-sm: 6px;
+$radius-md: 10px;
+$radius-lg: 16px;
+$header-height: 4rem;
+
+$shadow-glow: 0 0 0 1px rgba($accent, 0.25), 0 8px 30px rgba(#000, 0.45);

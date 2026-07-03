@@ -1,0 +1,146 @@
+.container {
+  width: 100%;
+  max-width: $content-width;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+// ---- Header / nav --------------------------------------------------------------------------
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  height: $header-height;
+  display: flex;
+  align-items: center;
+  background: rgba($bg-panel, 0.88);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid $border-soft;
+  box-shadow: 0 1px 0 rgba($empire-blue, 0.15);
+}
+
+.site-header__inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  width: 100%;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  border-bottom: none;
+
+  &:hover { color: $text; }
+}
+
+.brand__mark {
+  width: 34px;
+  height: 34px;
+  display: block;
+  filter: drop-shadow(0 0 8px rgba($empire-blue, 0.5));
+}
+
+.brand__name {
+  font-family: $font-display;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  font-size: 1.05rem;
+  color: $text;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 1.6rem;
+}
+
+.nav__link {
+  font-family: $font-display;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $text-muted;
+  border-bottom: none;
+  padding: 0.4rem 0;
+  position: relative;
+
+  &::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 100%;
+    bottom: -1px;
+    height: 2px;
+    background: $empire-gradient;
+    transition: right 0.2s ease;
+  }
+
+  &:hover, &.is-active {
+    color: $text;
+    &::after { right: 0; }
+  }
+}
+
+.nav__link--icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+// Mobile: stack the nav under the brand row when space runs out.
+@media (max-width: 640px) {
+  .site-header { height: auto; padding: 0.85rem 0; }
+  .site-header__inner { flex-wrap: wrap; row-gap: 0.75rem; }
+  .nav { gap: 1.1rem; flex-wrap: wrap; }
+}
+
+// ---- Page content ---------------------------------------------------------------------------
+.page {
+  padding: 3rem 0 5rem;
+}
+
+.page--narrow .container { max-width: 52rem; }
+
+// ---- Footer -----------------------------------------------------------------------------------
+.site-footer {
+  border-top: 1px solid $border-soft;
+  background: $bg-panel;
+  padding: 2.5rem 0;
+  margin-top: auto;
+}
+
+.site-footer__inner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.site-footer__links {
+  display: flex;
+  gap: 1.4rem;
+  flex-wrap: wrap;
+}
+
+.site-footer a {
+  color: $text-muted;
+  border-bottom: 1px solid transparent;
+  font-size: 0.9rem;
+
+  &:hover { color: $accent; border-color: rgba($accent, 0.4); }
+}
+
+.site-footer__legal {
+  color: $text-faint;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  max-width: 40rem;
+}
+
+.site-footer__legal p { margin: 0 0 0.5em; }

@@ -1,0 +1,33 @@
+// Self-hosted, permissively licensed (SIL OFL 1.1) fonts — see assets/fonts/OFL-*.txt for the
+// full license text of each family. Fetched directly from Google Fonts' gstatic CDN (the
+// "Latin" subset only, since this site's content is English) rather than linked at runtime, so
+// the site has no external font-loading dependency.
+//
+// Orbitron and Exo 2 both ship as variable fonts on Google Fonts, so a single file covers their
+// whole weight range — declared here with a `font-weight` range so the browser interpolates.
+
+@font-face {
+  font-family: "Orbitron";
+  font-style: normal;
+  font-weight: 700 900;
+  font-display: swap;
+  src: url("../fonts/Orbitron-Variable.woff2") format("woff2-variations"),
+       url("../fonts/Orbitron-Variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Exo 2";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("../fonts/Exo2-Variable.woff2") format("woff2-variations"),
+       url("../fonts/Exo2-Variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Share Tech Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/ShareTechMono-Regular.woff2") format("woff2");
+}

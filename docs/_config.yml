@@ -1,0 +1,55 @@
+# Raxicore Editor documentation / landing site (Jekyll).
+# Served as a GitHub Pages PROJECT site under an org: https://psforever.github.io/raxicore-editor/
+# so `baseurl` MUST be the repo name — every internal link/asset uses the relative_url /
+# absolute_url filters so it resolves correctly under that subpath.
+
+title: Raxicore Editor
+tagline: An engine-derived game-asset viewer, editor, and unpacker
+description: >-
+  Raxicore Editor is a cross-platform desktop viewer, editor, and unpacker for engine-derived
+  game assets — archives, meshes, animations, textures, surfaces, and ASCII databases — with an
+  offscreen-Vulkan 3D viewport, built in C# / .NET 10.
+
+url: "https://psforever.github.io"
+baseurl: "/raxicore-editor"
+logo: /assets/img/logo-512.png
+
+repository: psforever/raxicore-editor
+github_username: psforever
+
+author:
+  name: PSForever
+
+# ---- Build ----------------------------------------------------------------------------------
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+highlighter: rouge
+sass:
+  style: compressed
+  sass_dir: _sass
+
+permalink: /:title/
+
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+  - jekyll-feed
+
+# jekyll-feed generates an Atom feed from _posts; this site has none, so keep the plugin (it's
+# harmless / a no-op) but there is nothing for it to index.
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: "default"
+      image: /assets/img/logo-512.png
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
+  - node_modules/
+  - README.md
