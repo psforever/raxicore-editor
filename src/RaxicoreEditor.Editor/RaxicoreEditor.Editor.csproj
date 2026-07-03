@@ -46,4 +46,11 @@
     <None Include="Rendering/Shaders/mesh.frag" />
   </ItemGroup>
 
+  <!-- GLSL translations of the engine-derived reference client's original per-material Cg shaders
+       (see Rendering/Shaders/EngineDerived/README.md). Reference material only — not embedded,
+       not wired into the live MeshViewportRenderer pipeline. -->
+  <ItemGroup>
+    <None Include="Rendering/Shaders/EngineDerived/**/*" />
+  </ItemGroup>
+
 </Project>
