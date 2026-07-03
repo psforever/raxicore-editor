@@ -35,14 +35,16 @@ namespace RaxicoreEditor.EngineAssets.Textures
         /// <summary>True if a texture with this exact key (base name, no extension) is indexed.</summary>
         public bool Contains(string textureKey) => !string.IsNullOrEmpty(textureKey) && _index.ContainsKey(textureKey);
 
-        /// <summary>Index every <c>*.fat</c> archive in <paramref name="assetDir"/> (non-recursive).</summary>
+        /// <summary>Index every <c>*.fat</c> archive under <paramref name="assetDir"/>, including archives
+        /// nested in subdirectories such as <c>pack/</c>, <c>expansion1/</c>, <c>patch1-5/</c>, <c>maps/</c>,
+        /// and <c>patchmap/map9x/</c> — most of the engine's texture archives live outside the top level.</summary>
         public TextureProvider(string? assetDir)
         {
             if (string.IsNullOrEmpty(assetDir) || !Directory.Exists(assetDir))
             {
                 return;
             }
-            foreach (string fat in Directory.GetFiles(assetDir, "*.fat"))
+            foreach (string fat in Directory.EnumerateFiles(assetDir, "*.fat", SearchOption.AllDirectories))
             {
                 try { IndexArchive(fat); }
                 catch { /* skip an unreadable/foreign archive */ }
