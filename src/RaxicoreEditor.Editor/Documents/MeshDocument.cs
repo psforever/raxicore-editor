@@ -896,10 +896,9 @@ namespace RaxicoreEditor.Editor.Documents
         {
             Vector3 s = obj.Scale;
             if (s.X == 0f && s.Y == 0f && s.Z == 0f) s = Vector3.One;
-            // rot[2] is a 2-D heading vector in the ground plane; yaw = atan2(y, x).
-            float yaw = obj.Rotation.LengthSquared() > 1e-9f ? MathF.Atan2(obj.Rotation.Y, obj.Rotation.X) : 0f;
+            // MapObject.Yaw is the object's heading in radians about the native up (Z) axis.
             Matrix4x4 n = Matrix4x4.CreateScale(s)
-                          * Matrix4x4.CreateRotationZ(yaw)
+                          * Matrix4x4.CreateRotationZ(obj.Yaw)
                           * Matrix4x4.CreateTranslation(obj.Position);
             return ViewBasisInv * n * ViewBasis;
         }

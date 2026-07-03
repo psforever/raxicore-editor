@@ -7,10 +7,17 @@ namespace RaxicoreEditor.EngineAssets.Maps
 {
     /// <summary>
     /// One placed scene object from a <c>map_objects</c> record (40 bytes): an index into the
-    /// <c>map_names</c> list, a world position, a per-axis scale, and a 2-component rotation.
+    /// <c>map_names</c> list, a world position, a per-axis scale, and a yaw about the up (Z) axis.
+    /// <para>
+    /// <see cref="Yaw"/> is in radians, decoded from the record's <c>u16</c> heading field at <c>+36</c>
+    /// (<b>not</b> the <c>f32[2]</c> at <c>+28</c>, which is a reserved pitch/roll pair that is <c>(0,0)</c>
+    /// in every shipped continent). That heading uses <c>16384</c> (2¹⁴) units per full turn — verified
+    /// against all shipped continents: the field ranges exactly <c>[0, 0x4000]</c>, warpgates sit at the
+    /// clean <c>0x4000</c> quarter/whole markers, and values are otherwise spread across the entire turn.
+    /// </para>
     /// </summary>
     public readonly record struct MapObject(
-        int NameIndex, string Name, Vector3 Position, Vector3 Scale, Vector2 Rotation);
+        int NameIndex, string Name, Vector3 Position, Vector3 Scale, float Yaw);
 
     /// <summary>
     /// <c>contents_mapNN.mpo</c> — the continent's tile/object manifest (packed inside
@@ -21,8 +28,9 @@ namespace RaxicoreEditor.EngineAssets.Maps
     /// Layout confirmed byte-for-byte against the shipped files (see
     /// <c>docs/rendering/continent-scene.md §4</c>): <c>map_names</c> = <c>u32 count</c> + a
     /// NUL-delimited name list; <c>map_objects</c> = <c>u32 count</c> + <c>count</c>×40-byte
-    /// placement records (<c>u16 name_index, u16 flag, f32 pos[3], f32 scale[3], f32 rot[2],
-    /// 4-byte tail</c>); <c>map_sections</c>/<c>map_water</c> = <c>u32 count</c> + <c>u32</c> packed
+    /// placement records (<c>u16 name_index, u16 flag, f32 pos[3], f32 scale[3], f32 reserved[2]
+    /// (pitch/roll, always 0), u16 yaw (2¹⁴ units/turn), u16 pad</c>); <c>map_sections</c>/<c>map_water</c>
+    /// = <c>u32 count</c> + <c>u32</c> packed
     /// cell ids (<c>col = id &amp; 0x1F, row = id &gt;&gt; 5</c>); <c>map_header</c> = <c>f32[2]</c>.
     /// </summary>
     public sealed class MpoFile
@@ -127,10 +135,12 @@ namespace RaxicoreEditor.EngineAssets.Maps
                 r.ReadUInt16();                                   // flag
                 var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                 var scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-                var rot = new Vector2(r.ReadSingle(), r.ReadSingle());
-                r.Skip(4);                                        // tail
+                r.Skip(8);                                        // reserved pitch/roll f32[2] — always 0
+                ushort yawRaw = r.ReadUInt16();                   // yaw: 16384 (2^14) units per full turn
+                r.ReadUInt16();                                   // pad (always 0)
+                float yaw = yawRaw / 16384f * MathF.Tau;
                 string name = nameIndex >= 0 && nameIndex < _names.Count ? _names[nameIndex] : "";
-                _objects.Add(new MapObject(nameIndex, name, pos, scale, rot));
+                _objects.Add(new MapObject(nameIndex, name, pos, scale, yaw));
             }
         }
 
