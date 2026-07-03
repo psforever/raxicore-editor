@@ -1,0 +1,20 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="RaxicoreEditor.Editor.App"
+             RequestedThemeVariant="Default">
+  <!--
+    The active theme (Fluent by default, optionally the classic "Windows Standard") and the chrome
+    brush colors below are applied/updated in code by ThemeManager. RequestedThemeVariant="Default"
+    keeps the Fluent variant following the OS light/dark setting.
+  -->
+  <Application.Resources>
+    <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#16181c" />
+    <SolidColorBrush x:Key="PanelBackgroundBrush" Color="#1e2127" />
+    <SolidColorBrush x:Key="EditorBackgroundBrush" Color="#111316" />
+    <SolidColorBrush x:Key="ViewportBackgroundBrush" Color="#0b0d10" />
+    <SolidColorBrush x:Key="SeparatorBrush" Color="#2b313a" />
+    <SolidColorBrush x:Key="TextBrush" Color="#d7dbe2" />
+    <SolidColorBrush x:Key="SubtleTextBrush" Color="#8a93a0" />
+    <SolidColorBrush x:Key="AccentBrush" Color="#4f9be0" />
+  </Application.Resources>
+</Application>

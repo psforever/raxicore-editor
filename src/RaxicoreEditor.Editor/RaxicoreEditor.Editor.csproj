@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WinExe = Windows GUI subsystem: no console window pops up on launch. stdout still works when
+         redirected (e.g. the selftest mode piped from a terminal). -->
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>RaxicoreEditor.Editor</RootNamespace>
+    <AssemblyName>RaxicoreEditor.Editor</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\raxicore.ico</ApplicationIcon>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RaxicoreEditor.EngineAssets\RaxicoreEditor.EngineAssets.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\icon.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Controls.DataGrid" Version="12.0.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+    <PackageReference Include="ShadUI" Version="0.2.3" />
+    <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Rendering/Shaders/mesh.vert.spv">
+      <LogicalName>mesh.vert.spv</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Rendering/Shaders/mesh.frag.spv">
+      <LogicalName>mesh.frag.spv</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- The GLSL sources are kept beside the .spv for reference; not compiled at build time. -->
+  <ItemGroup>
+    <None Include="Rendering/Shaders/mesh.vert" />
+    <None Include="Rendering/Shaders/mesh.frag" />
+  </ItemGroup>
+
+</Project>

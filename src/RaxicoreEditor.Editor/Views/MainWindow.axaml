@@ -1,0 +1,535 @@
+<shadui:Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RaxicoreEditor.Editor.ViewModels"
+        xmlns:doc="using:RaxicoreEditor.Editor.Documents"
+        xmlns:rendering="using:RaxicoreEditor.Editor.Rendering"
+        xmlns:controls="using:RaxicoreEditor.Editor.Controls"
+        xmlns:conv="using:Avalonia.Data.Converters"
+        xmlns:shadui="clr-namespace:ShadUI;assembly=ShadUI"
+        x:Class="RaxicoreEditor.Editor.Views.MainWindow"
+        x:CompileBindings="False"
+        Width="1600" Height="900"
+        MinWidth="960" MinHeight="600"
+        Title="Raxicore Editor"
+        Icon="/Assets/icon.png"
+        TitleFontWeight="SemiBold"
+        Background="{DynamicResource WindowBackgroundBrush}">
+
+  <shadui:Window.Resources>
+    <!-- Alpha checkerboard so DDS transparency reads clearly behind the texture. -->
+    <DrawingBrush x:Key="CheckerBrush" TileMode="Tile" Stretch="None"
+                  SourceRect="0,0,24,24" DestinationRect="0,0,24,24">
+      <DrawingBrush.Drawing>
+        <DrawingGroup>
+          <GeometryDrawing Brush="#3a3d44" Geometry="M0,0 H24 V24 H0 Z" />
+          <GeometryDrawing Brush="#2b2e34" Geometry="M0,0 H12 V12 H0 Z M12,12 H24 V24 H12 Z" />
+        </DrawingGroup>
+      </DrawingBrush.Drawing>
+    </DrawingBrush>
+  </shadui:Window.Resources>
+
+  <shadui:Window.DataTemplates>
+    <!-- Per-document content views, selected by type for the active tab. -->
+    <DataTemplate DataType="doc:TextDocument">
+      <DockPanel Background="{DynamicResource EditorBackgroundBrush}">
+        <!-- Validation panel: format + issues, updated live as you edit. -->
+        <Border DockPanel.Dock="Bottom" Background="{DynamicResource PanelBackgroundBrush}"
+                BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0">
+          <DockPanel MaxHeight="160" Margin="0,2">
+            <TextBlock DockPanel.Dock="Top" Text="{Binding ValidationSummary}" Margin="10,4" FontSize="12"
+                       Foreground="{DynamicResource SubtleTextBrush}" />
+            <ScrollViewer IsVisible="{Binding HasIssues}" MaxHeight="130">
+              <ItemsControl ItemsSource="{Binding Issues}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding Display}" FontSize="11" Margin="12,1" TextWrapping="Wrap"
+                               FontFamily="Cascadia Code,Consolas,monospace"
+                               Foreground="{DynamicResource TextBrush}" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
+        <TextBox Text="{Binding Text, Mode=TwoWay}" AcceptsReturn="True" AcceptsTab="True"
+                 FontFamily="Cascadia Code,Consolas,monospace" FontSize="13"
+                 TextWrapping="NoWrap"
+                 Background="{DynamicResource EditorBackgroundBrush}"
+                 Foreground="{DynamicResource TextBrush}" BorderThickness="0"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+      </DockPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="doc:HexDocument">
+      <TextBox Text="{Binding HexText}" IsReadOnly="True"
+               FontFamily="Cascadia Code,Consolas,monospace" FontSize="12.5"
+               TextWrapping="NoWrap"
+               Background="{DynamicResource EditorBackgroundBrush}"
+               Foreground="{DynamicResource SubtleTextBrush}" BorderThickness="0"
+               ScrollViewer.HorizontalScrollBarVisibility="Auto"
+               ScrollViewer.VerticalScrollBarVisibility="Auto" />
+    </DataTemplate>
+
+    <DataTemplate DataType="doc:ImageDocument">
+      <Grid Background="{DynamicResource ViewportBackgroundBrush}" RowDefinitions="*,Auto">
+        <Border Grid.Row="0" Background="{StaticResource CheckerBrush}">
+          <Image Source="{Binding Preview}" Stretch="Uniform"
+                 HorizontalAlignment="Center" VerticalAlignment="Center" Margin="8" />
+        </Border>
+        <TextBlock Grid.Row="1" Text="{Binding Info}" Foreground="{DynamicResource SubtleTextBrush}"
+                   HorizontalAlignment="Center" Margin="6" FontSize="12" />
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="doc:SurfaceDocument">
+      <Grid Background="{DynamicResource ViewportBackgroundBrush}" ColumnDefinitions="*,Auto">
+        <controls:SurfaceEditor Grid.Column="0" Margin="12" />
+        <Border Grid.Column="1" Width="220" Background="{DynamicResource PanelBackgroundBrush}"
+                BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1,0,0,0">
+          <DockPanel Margin="10,8">
+            <TextBlock DockPanel.Dock="Top" Text="SURFACE TYPES — click to pick, paint on grid"
+                       TextWrapping="Wrap" FontSize="11" FontWeight="SemiBold"
+                       Foreground="{DynamicResource SubtleTextBrush}" Margin="0,0,0,4" />
+            <TextBlock DockPanel.Dock="Top" Text="{Binding Info}" TextWrapping="Wrap"
+                       Foreground="{DynamicResource SubtleTextBrush}" FontSize="11" Margin="0,0,0,6" />
+            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="6" Margin="0,0,0,8"
+                        IsVisible="{Binding CanEdit}">
+              <Border Width="16" Height="16" CornerRadius="2" Background="{Binding CurrentPaintBrush}" />
+              <TextBlock Text="{Binding PaintInfo}" FontSize="11" VerticalAlignment="Center"
+                         Foreground="{DynamicResource TextBrush}" />
+            </StackPanel>
+            <ScrollViewer>
+              <ItemsControl ItemsSource="{Binding Legend}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Button Padding="3" Margin="0,1" HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Left" Background="Transparent" BorderThickness="0"
+                            Command="{Binding $parent[ItemsControl].DataContext.SelectTypeCommand}"
+                            CommandParameter="{Binding}">
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Border Width="14" Height="14" CornerRadius="2" Background="{Binding Swatch}" />
+                        <TextBlock Text="{Binding Label}" FontSize="11" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextBrush}" />
+                      </StackPanel>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="doc:MeshDocument">
+      <Grid Background="{DynamicResource ViewportBackgroundBrush}">
+        <rendering:VulkanViewport />
+        <StackPanel VerticalAlignment="Top" HorizontalAlignment="Left" Margin="10" Spacing="2"
+                    IsHitTestVisible="False">
+          <TextBlock Text="{Binding Summary}" Foreground="#d2d6dd" FontSize="12" />
+          <TextBlock Text="LMB orbit · RMB/MMB pan · wheel zoom" Foreground="#9aa1ac" FontSize="11" />
+        </StackPanel>
+      </Grid>
+    </DataTemplate>
+    <DataTemplate DataType="doc:AnimDocument">
+      <Grid Background="{DynamicResource EditorBackgroundBrush}" RowDefinitions="Auto,Auto,*,4,2*">
+        <TextBlock Grid.Row="0" Text="{Binding Info}" Margin="10,7"
+                   Foreground="{DynamicResource SubtleTextBrush}" FontSize="12" />
+        <TextBox Grid.Row="1" Margin="10,0,10,6" PlaceholderText="filter animations…"
+                 Text="{Binding Filter, Mode=TwoWay}" FontSize="12" />
+        <DataGrid Grid.Row="2" ItemsSource="{Binding Animations}"
+                  SelectedItem="{Binding SelectedAnimation, Mode=TwoWay}"
+                  IsReadOnly="True" CanUserSortColumns="True" GridLinesVisibility="Horizontal"
+                  Background="{DynamicResource EditorBackgroundBrush}">
+          <DataGrid.Columns>
+            <DataGridTextColumn Header="Animation" Binding="{Binding Name}" Width="*" />
+            <DataGridTextColumn Header="Duration" Width="110"
+                                Binding="{Binding Duration, StringFormat='{}{0:0.###} s'}" />
+            <DataGridTextColumn Header="Tracks" Binding="{Binding TrackCount}" Width="90" />
+          </DataGrid.Columns>
+        </DataGrid>
+        <GridSplitter Grid.Row="3" Height="4" HorizontalAlignment="Stretch"
+                      Background="{DynamicResource SeparatorBrush}" />
+        <DataGrid Grid.Row="4" ItemsSource="{Binding Tracks}" IsReadOnly="True"
+                  CanUserSortColumns="True" GridLinesVisibility="Horizontal"
+                  Background="{DynamicResource EditorBackgroundBrush}">
+          <DataGrid.Columns>
+            <DataGridTextColumn Header="Track" Binding="{Binding Name}" Width="*" />
+            <DataGridTextColumn Header="Pos Flags" Binding="{Binding PosFlags}" Width="100" />
+            <DataGridTextColumn Header="Pos Keys" Binding="{Binding PosKeys}" Width="90" />
+            <DataGridTextColumn Header="Rot Flags" Binding="{Binding RotFlags}" Width="100" />
+            <DataGridTextColumn Header="Rot Keys" Binding="{Binding RotKeys}" Width="90" />
+            <DataGridTextColumn Header="Animated" Binding="{Binding Animated}" Width="100" />
+          </DataGrid.Columns>
+        </DataGrid>
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="doc:AdbDocument">
+      <DockPanel Background="{DynamicResource EditorBackgroundBrush}">
+        <TextBlock DockPanel.Dock="Top" Text="{Binding Info}" Margin="10,7"
+                   Foreground="{DynamicResource SubtleTextBrush}" FontSize="12" />
+        <TextBox DockPanel.Dock="Top" Margin="10,0,10,6" PlaceholderText="filter tokens…"
+                 Text="{Binding Filter, Mode=TwoWay}" FontSize="12" />
+        <DataGrid ItemsSource="{Binding Tokens}" IsReadOnly="True" CanUserSortColumns="True"
+                  GridLinesVisibility="Horizontal" Background="{DynamicResource EditorBackgroundBrush}">
+          <DataGrid.Columns>
+            <DataGridTextColumn Header="#" Binding="{Binding Index}" Width="90" />
+            <DataGridTextColumn Header="Token" Binding="{Binding Value}" Width="*"
+                                FontFamily="Cascadia Code,Consolas,monospace" />
+          </DataGrid.Columns>
+        </DataGrid>
+      </DockPanel>
+    </DataTemplate>
+    <DataTemplate DataType="doc:GameObjectDocument">
+      <Grid Background="{DynamicResource EditorBackgroundBrush}" RowDefinitions="Auto,Auto,*,4,*">
+        <TextBlock Grid.Row="0" Text="{Binding Info}" Margin="10,7"
+                   Foreground="{DynamicResource SubtleTextBrush}" FontSize="12" />
+        <TextBox Grid.Row="1" Margin="10,0,10,6" PlaceholderText="filter by name or type…"
+                 Text="{Binding Filter, Mode=TwoWay}" FontSize="12" />
+        <DataGrid Grid.Row="2" ItemsSource="{Binding Objects}"
+                  SelectedItem="{Binding SelectedObject, Mode=TwoWay}"
+                  IsReadOnly="True" CanUserSortColumns="True" GridLinesVisibility="Horizontal"
+                  Background="{DynamicResource EditorBackgroundBrush}">
+          <DataGrid.Columns>
+            <DataGridTextColumn Header="class_id" Binding="{Binding ClassId}" Width="80" />
+            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="*" />
+            <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="160" />
+            <DataGridTextColumn Header="Props" Binding="{Binding PropCount}" Width="70" />
+          </DataGrid.Columns>
+        </DataGrid>
+        <GridSplitter Grid.Row="3" Height="4" HorizontalAlignment="Stretch"
+                      Background="{DynamicResource SeparatorBrush}" />
+        <DataGrid Grid.Row="4" ItemsSource="{Binding Properties}" IsReadOnly="True"
+                  CanUserSortColumns="True" GridLinesVisibility="Horizontal"
+                  Background="{DynamicResource EditorBackgroundBrush}">
+          <DataGrid.Columns>
+            <DataGridTextColumn Header="Property" Binding="{Binding Key}" Width="200" />
+            <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*"
+                                FontFamily="Cascadia Code,Consolas,monospace" />
+          </DataGrid.Columns>
+        </DataGrid>
+      </Grid>
+    </DataTemplate>
+  </shadui:Window.DataTemplates>
+
+  <DockPanel>
+    <!-- Menu. Headers use AccessText so the '_' renders as a hidden Alt-mnemonic (underlined on Alt),
+         not a literal underscore — ShadUI's MenuItem template doesn't recognise access keys on a plain
+         string header. -->
+    <Menu DockPanel.Dock="Top">
+      <MenuItem>
+        <MenuItem.Header><AccessText Text="_File" /></MenuItem.Header>
+        <MenuItem Click="OnOpenFolder">
+          <MenuItem.Header><AccessText Text="_Open Folder…" /></MenuItem.Header>
+        </MenuItem>
+        <MenuItem Click="OnOpenArchive">
+          <MenuItem.Header><AccessText Text="Open _Archive…" /></MenuItem.Header>
+        </MenuItem>
+        <Separator />
+        <MenuItem Click="OnExport">
+          <MenuItem.Header><AccessText Text="_Export Active Document…" /></MenuItem.Header>
+        </MenuItem>
+        <MenuItem Click="OnExportObj">
+          <MenuItem.Header><AccessText Text="Export _Mesh as OBJ…" /></MenuItem.Header>
+        </MenuItem>
+        <Separator />
+        <MenuItem Click="OnExit">
+          <MenuItem.Header><AccessText Text="E_xit" /></MenuItem.Header>
+        </MenuItem>
+      </MenuItem>
+      <MenuItem>
+        <MenuItem.Header><AccessText Text="_View" /></MenuItem.Header>
+        <MenuItem>
+          <MenuItem.Header><AccessText Text="_Theme" /></MenuItem.Header>
+          <MenuItem Header="System" Click="OnThemeSystem"
+                    ToggleType="Radio" IsChecked="True" x:Name="ThemeSystemItem" />
+          <MenuItem Header="Light" Click="OnThemeLight"
+                    ToggleType="Radio" x:Name="ThemeLightItem" />
+          <MenuItem Header="Dark" Click="OnThemeDark"
+                    ToggleType="Radio" x:Name="ThemeDarkItem" />
+        </MenuItem>
+      </MenuItem>
+    </Menu>
+
+    <!-- Console -->
+    <Border DockPanel.Dock="Bottom" Height="140"
+            Background="{DynamicResource PanelBackgroundBrush}"
+            BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Top" Text="CONSOLE"
+                   Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                   Margin="10,5" FontWeight="SemiBold" />
+        <ScrollViewer Margin="10,0,10,6">
+          <ItemsControl ItemsSource="{Binding ConsoleLines}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" Foreground="{DynamicResource SubtleTextBrush}"
+                           FontSize="12" FontFamily="Cascadia Code,Consolas,monospace" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </DockPanel>
+    </Border>
+
+    <!-- Main split: browser | tabs | inspector -->
+    <Grid ColumnDefinitions="280,4,*,4,300">
+      <!-- Browser -->
+      <Border Grid.Column="0" Background="{DynamicResource PanelBackgroundBrush}"
+              BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,0,1,0">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Text="ASSETS"
+                     Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                     Margin="10,7" FontWeight="SemiBold" />
+          <TextBox DockPanel.Dock="Top" Margin="8,0,8,6" PlaceholderText="filter…"
+                   Text="{Binding BrowserFilter, Mode=TwoWay}" FontSize="12" />
+
+          <!-- View switcher: tabs at the bottom of the pane (Game Assets is the default view). -->
+          <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0">
+            <Grid ColumnDefinitions="*,*" Height="34">
+              <Grid.Styles>
+                <Style Selector="Button.viewtab">
+                  <Setter Property="HorizontalAlignment" Value="Stretch" />
+                  <Setter Property="VerticalAlignment" Value="Stretch" />
+                  <Setter Property="HorizontalContentAlignment" Value="Center" />
+                  <Setter Property="VerticalContentAlignment" Value="Center" />
+                  <Setter Property="Background" Value="Transparent" />
+                  <Setter Property="BorderThickness" Value="0" />
+                  <Setter Property="CornerRadius" Value="0" />
+                  <Setter Property="FontSize" Value="12" />
+                  <Setter Property="Foreground" Value="{DynamicResource SubtleTextBrush}" />
+                </Style>
+                <Style Selector="Button.viewtab.active">
+                  <Setter Property="Background" Value="{DynamicResource EditorBackgroundBrush}" />
+                  <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                  <Setter Property="FontWeight" Value="SemiBold" />
+                </Style>
+              </Grid.Styles>
+              <Button Grid.Column="0" Classes="viewtab" Classes.active="{Binding GameAssetsView}"
+                      Command="{Binding ShowGameAssetsCommand}" Content="Game Assets" />
+              <Button Grid.Column="1" Classes="viewtab" Classes.active="{Binding FilesView}"
+                      Command="{Binding ShowFilesCommand}" Content="Files" />
+            </Grid>
+          </Border>
+
+          <!-- Both trees share selection/open behaviour; only one is visible at a time. -->
+          <Grid>
+            <TreeView IsVisible="{Binding GameAssetsView}" ItemsSource="{Binding CatalogRoots}"
+                      SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
+                      DoubleTapped="OnBrowserDoubleTapped" Background="Transparent">
+              <TreeView.Styles>
+                <Style Selector="TreeViewItem">
+                  <Setter Property="IsVisible" Value="{Binding IsVisible}" />
+                  <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                </Style>
+              </TreeView.Styles>
+              <TreeView.ItemTemplate>
+                <TreeDataTemplate ItemsSource="{Binding Children}">
+                  <StackPanel Orientation="Horizontal" Spacing="7">
+                    <Path Data="{Binding Icon}" Fill="{Binding IconBrush}"
+                          Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding Name}" Foreground="{DynamicResource TextBrush}"
+                               VerticalAlignment="Center" />
+                  </StackPanel>
+                </TreeDataTemplate>
+              </TreeView.ItemTemplate>
+            </TreeView>
+
+            <TreeView IsVisible="{Binding FilesView}" ItemsSource="{Binding Roots}"
+                      SelectedItem="{Binding SelectedNode, Mode=TwoWay}"
+                      DoubleTapped="OnBrowserDoubleTapped" Background="Transparent">
+              <TreeView.Styles>
+                <Style Selector="TreeViewItem">
+                  <Setter Property="IsVisible" Value="{Binding IsVisible}" />
+                  <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                </Style>
+              </TreeView.Styles>
+              <TreeView.ItemTemplate>
+                <TreeDataTemplate ItemsSource="{Binding Children}">
+                  <StackPanel Orientation="Horizontal" Spacing="7">
+                    <Path Data="{Binding Icon}" Fill="{Binding IconBrush}"
+                          Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding Name}" Foreground="{DynamicResource TextBrush}"
+                               VerticalAlignment="Center" />
+                  </StackPanel>
+                </TreeDataTemplate>
+              </TreeView.ItemTemplate>
+            </TreeView>
+          </Grid>
+        </DockPanel>
+      </Border>
+
+      <GridSplitter Grid.Column="1" Background="{DynamicResource SeparatorBrush}" />
+
+      <!-- Tabbed documents -->
+      <TabControl Grid.Column="2" ItemsSource="{Binding OpenDocuments}"
+                  SelectedItem="{Binding SelectedDocument, Mode=TwoWay}"
+                  Background="{DynamicResource EditorBackgroundBrush}" Padding="0"
+                  HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+        <!-- ShadUI's default TabControl hosts content in a vertical StackPanel, which measures content
+             with infinite height and never stretches it (so the viewport collapsed to ~53px). Retemplate
+             the container as a Grid (Auto tab strip + * content) so content fills the tab. TabItems keep
+             their ShadUI styling, which lives in a separate TabItem control theme. -->
+        <!-- Tabs flow horizontally and wrap to a new row only when out of width. -->
+        <TabControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <WrapPanel Orientation="Horizontal" />
+          </ItemsPanelTemplate>
+        </TabControl.ItemsPanel>
+        <TabControl.Template>
+          <ControlTemplate TargetType="TabControl">
+            <Border Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    Padding="{TemplateBinding Padding}">
+              <Grid RowDefinitions="Auto,*">
+                <!-- Bind the presenter's panel to the TabControl's ItemsPanel (a bare ItemsPresenter
+                     otherwise falls back to its default VERTICAL StackPanel → tabs stack vertically). -->
+                <ItemsPresenter Grid.Row="0" Name="PART_ItemsPresenter" Margin="0,0,0,6"
+                                ItemsPanel="{TemplateBinding ItemsPanel}" />
+                <ContentPresenter Grid.Row="1" Name="PART_SelectedContentHost"
+                                  Content="{TemplateBinding SelectedContent}"
+                                  ContentTemplate="{TemplateBinding SelectedContentTemplate}"
+                                  HorizontalContentAlignment="Stretch"
+                                  VerticalContentAlignment="Stretch" />
+              </Grid>
+            </Border>
+          </ControlTemplate>
+        </TabControl.Template>
+        <TabControl.ItemTemplate>
+          <DataTemplate>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="{Binding TabHeader}" VerticalAlignment="Center" />
+              <Button Content="✕" Command="{Binding CloseCommand}" Width="18" Height="18"
+                      Padding="0" FontSize="11" Background="Transparent" BorderThickness="0"
+                      Foreground="{DynamicResource SubtleTextBrush}" VerticalAlignment="Center" />
+            </StackPanel>
+          </DataTemplate>
+        </TabControl.ItemTemplate>
+      </TabControl>
+
+      <GridSplitter Grid.Column="3" Background="{DynamicResource SeparatorBrush}" />
+
+      <!-- Inspector -->
+      <Border Grid.Column="4" Background="{DynamicResource PanelBackgroundBrush}"
+              BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1,0,0,0">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Text="INSPECTOR"
+                     Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                     Margin="10,7" FontWeight="SemiBold" />
+          <DockPanel Margin="10,0,10,8" DataContext="{Binding SelectedDocument}">
+            <StackPanel DockPanel.Dock="Top">
+              <TextBlock Text="{Binding Title}" Foreground="{DynamicResource TextBrush}"
+                         FontSize="15" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding Source}" Foreground="{DynamicResource SubtleTextBrush}"
+                         FontSize="11" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding Kind, StringFormat='kind: {0}'}"
+                         Foreground="{DynamicResource SubtleTextBrush}" Margin="0,0,0,6" />
+            </StackPanel>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel Spacing="2">
+                <!-- Mesh part picker (only present for 3D documents). -->
+                <TextBlock Text="MESHES — select to isolate"
+                           Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                           FontWeight="SemiBold" Margin="0,2,0,4"
+                           IsVisible="{Binding Parts, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+                <ListBox ItemsSource="{Binding Parts}"
+                         SelectedItem="{Binding SelectedPart, Mode=TwoWay}"
+                         MaxHeight="200" Background="Transparent" BorderThickness="0"
+                         IsVisible="{Binding Parts, Converter={x:Static conv:ObjectConverters.IsNotNull}}">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <TextBlock Text="{Binding Display}" FontSize="12"
+                                 Foreground="{DynamicResource TextBrush}" />
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+                <TextBlock Text="{Binding PartInfo}" Margin="2,6,0,0"
+                           Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                           FontFamily="Cascadia Code,Consolas,monospace"
+                           IsVisible="{Binding Parts, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+
+                <!-- Texture picker (mesh documents). Swap a material's texture, or flip the whole model
+                     between empires (so vehicles don't all show the NC skin). -->
+                <StackPanel Margin="0,12,0,0" Spacing="5"
+                            IsVisible="{Binding HasMaterials, FallbackValue=False}">
+                  <TextBlock Text="TEXTURES" FontSize="11" FontWeight="SemiBold"
+                             Foreground="{DynamicResource SubtleTextBrush}" />
+
+                  <!-- Whole-model empire swap — the headline action. -->
+                  <StackPanel Orientation="Horizontal" Spacing="6"
+                              IsVisible="{Binding HasEmpireTextures, FallbackValue=False}">
+                    <TextBlock Text="Empire:" FontSize="11" VerticalAlignment="Center"
+                               Foreground="{DynamicResource SubtleTextBrush}" />
+                    <Button Content="NC" Tag="nc" Click="OnModelEmpire" Padding="8,2" FontSize="11" />
+                    <Button Content="TR" Tag="tr" Click="OnModelEmpire" Padding="8,2" FontSize="11" />
+                    <Button Content="VS" Tag="vs" Click="OnModelEmpire" Padding="8,2" FontSize="11" />
+                  </StackPanel>
+
+                  <!-- Per-material list with quick per-material empire swap. -->
+                  <ListBox ItemsSource="{Binding Materials}"
+                           SelectedItem="{Binding SelectedMaterial, Mode=TwoWay}"
+                           MaxHeight="180" Background="Transparent" BorderThickness="0">
+                    <ListBox.ItemTemplate>
+                      <DataTemplate>
+                        <Grid ColumnDefinitions="*,Auto">
+                          <TextBlock Grid.Column="0" Text="{Binding Display}" FontSize="11"
+                                     TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                     Foreground="{DynamicResource TextBrush}" />
+                          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
+                            <Button Content="NC" Tag="nc" Click="OnMaterialEmpire"
+                                    IsEnabled="{Binding NcEnabled}" Padding="4,0" FontSize="10" MinWidth="0" />
+                            <Button Content="TR" Tag="tr" Click="OnMaterialEmpire"
+                                    IsEnabled="{Binding TrEnabled}" Padding="4,0" FontSize="10" MinWidth="0" />
+                            <Button Content="VS" Tag="vs" Click="OnMaterialEmpire"
+                                    IsEnabled="{Binding VsEnabled}" Padding="4,0" FontSize="10" MinWidth="0" />
+                          </StackPanel>
+                        </Grid>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+
+                  <!-- Pick any texture for the selected material. -->
+                  <TextBox Text="{Binding TextureFilter, Mode=TwoWay}" FontSize="11"
+                           PlaceholderText="search textures…" />
+                  <ListBox ItemsSource="{Binding FilteredTextures}"
+                           SelectedItem="{Binding PickedTexture, Mode=TwoWay}"
+                           MaxHeight="160" Background="Transparent" BorderThickness="0">
+                    <ListBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding}" FontSize="11"
+                                   FontFamily="Cascadia Code,Consolas,monospace"
+                                   Foreground="{DynamicResource TextBrush}" />
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+                </StackPanel>
+
+                <!-- Animation panel (skinned models only). The clip comes from a separately-loaded anims.ubr. -->
+                <StackPanel Margin="0,12,0,0" Spacing="6"
+                            IsVisible="{Binding CanAnimate, FallbackValue=False}">
+                  <TextBlock Text="ANIMATION" FontSize="11" FontWeight="SemiBold"
+                             Foreground="{DynamicResource SubtleTextBrush}" />
+                  <Button Content="Load anims.ubr…" Click="OnLoadAnimations" HorizontalAlignment="Stretch" />
+                  <ComboBox ItemsSource="{Binding AnimClips}" SelectedItem="{Binding ActiveClip, Mode=TwoWay}"
+                            PlaceholderText="select a clip" HorizontalAlignment="Stretch">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding Name}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <ToggleButton Content="Play / Pause" IsChecked="{Binding IsPlaying, Mode=TwoWay}"
+                                HorizontalAlignment="Stretch" />
+                </StackPanel>
+              </StackPanel>
+            </ScrollViewer>
+          </DockPanel>
+        </DockPanel>
+      </Border>
+    </Grid>
+  </DockPanel>
+</shadui:Window>

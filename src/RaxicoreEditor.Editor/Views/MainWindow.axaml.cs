@@ -1,0 +1,251 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
+using Avalonia.Styling;
+using RaxicoreEditor.Editor.Documents;
+using RaxicoreEditor.Editor.ViewModels;
+using RaxicoreEditor.EngineAssets.Meshes;
+
+namespace RaxicoreEditor.Editor.Views
+{
+    // ShadUI.Window provides the shadcn-style window chrome (custom title bar + caption buttons).
+    public partial class MainWindow : ShadUI.Window
+    {
+        private readonly MainWindowViewModel _vm = new();
+
+        public MainWindow()
+        {
+            InitializeComponent();
+            DataContext = _vm;
+        }
+
+        private async void OnOpenFolder(object? sender, RoutedEventArgs e)
+        {
+            try
+            {
+                IReadOnlyList<IStorageFolder> folders = await StorageProvider.OpenFolderPickerAsync(
+                    new FolderPickerOpenOptions { Title = "Open asset folder", AllowMultiple = false });
+                if (folders.Count > 0)
+                {
+                    string? path = folders[0].TryGetLocalPath();
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        _vm.MountFolder(path);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _vm.Log("open folder failed: " + ex.Message);
+            }
+        }
+
+        private async void OnOpenArchive(object? sender, RoutedEventArgs e)
+        {
+            try
+            {
+                IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(
+                    new FilePickerOpenOptions { Title = "Open archive / asset", AllowMultiple = false });
+                if (files.Count > 0)
+                {
+                    string? path = files[0].TryGetLocalPath();
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        _vm.OpenPath(path);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _vm.Log("open archive failed: " + ex.Message);
+            }
+        }
+
+        private async void OnExport(object? sender, RoutedEventArgs e)
+        {
+            DocumentBase? doc = _vm.SelectedDocument;
+            if (doc is null || !doc.CanExport)
+            {
+                return;
+            }
+
+            // File-type enforcement: don't export a text document that fails its format validation.
+            if (doc is TextDocument td && !td.IsContentValid)
+            {
+                _vm.Log($"Export blocked: '{td.Title}' has validation errors ({td.ValidationSummary}). " +
+                        "Fix them (see the panel below the editor) before exporting.");
+                return;
+            }
+
+            try
+            {
+                IStorageFile? file = await StorageProvider.SaveFilePickerAsync(
+                    new FilePickerSaveOptions
+                    {
+                        Title = "Export document",
+                        SuggestedFileName = doc.SuggestedFileName,
+                    });
+                if (file is null)
+                {
+                    return;
+                }
+                string? path = file.TryGetLocalPath();
+                if (string.IsNullOrEmpty(path))
+                {
+                    return;
+                }
+                await File.WriteAllBytesAsync(path, doc.Export());
+                doc.IsDirty = false;
+                _vm.Log($"Exported '{doc.Title}' → {path}");
+            }
+            catch (Exception ex)
+            {
+                _vm.Log("export failed: " + ex.Message);
+            }
+        }
+
+        private void OnExit(object? sender, RoutedEventArgs e) => Close();
+
+        private void OnThemeSystem(object? sender, RoutedEventArgs e) => SetVariant(ThemeVariant.Default);
+        private void OnThemeLight(object? sender, RoutedEventArgs e) => SetVariant(ThemeVariant.Light);
+        private void OnThemeDark(object? sender, RoutedEventArgs e) => SetVariant(ThemeVariant.Dark);
+
+        private void SetVariant(ThemeVariant variant)
+        {
+            if (Application.Current is App app)
+            {
+                app.Themes.SetVariant(variant);
+            }
+            ThemeSystemItem.IsChecked = variant == ThemeVariant.Default;
+            ThemeLightItem.IsChecked = variant == ThemeVariant.Light;
+            ThemeDarkItem.IsChecked = variant == ThemeVariant.Dark;
+        }
+
+        private async void OnExportObj(object? sender, RoutedEventArgs e)
+        {
+            if (_vm.SelectedDocument is not MeshDocument mesh || mesh.SelectedPart is not MeshPart part)
+            {
+                _vm.Log("Export OBJ: select a 3D mesh first.");
+                return;
+            }
+            try
+            {
+                IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+                {
+                    Title = "Export mesh as OBJ",
+                    SuggestedFileName = part.Name + ".obj",
+                    DefaultExtension = "obj",
+                });
+                if (file is null)
+                {
+                    return;
+                }
+                string? objPath = file.TryGetLocalPath();
+                if (string.IsNullOrEmpty(objPath))
+                {
+                    return;
+                }
+                string dir = Path.GetDirectoryName(objPath)!;
+                string baseName = Path.GetFileNameWithoutExtension(objPath);
+                MeshObjExporter.Result r = MeshObjExporter.Build(part, baseName);
+                await File.WriteAllTextAsync(objPath, r.Obj);
+                await File.WriteAllTextAsync(Path.Combine(dir, baseName + ".mtl"), r.Mtl);
+                int pngs = 0;
+                foreach (MeshObjExporter.TextureSidecar tex in r.Textures)
+                {
+                    try { SavePng(Path.Combine(dir, tex.FileName), tex.Bgra, tex.Width, tex.Height); pngs++; }
+                    catch { /* skip an unencodable texture */ }
+                }
+                _vm.Log($"Exported OBJ '{part.Name}' ({part.TriangleCount} tris) + {pngs} textures → {objPath}");
+            }
+            catch (Exception ex)
+            {
+                _vm.Log("OBJ export failed: " + ex.Message);
+            }
+        }
+
+        private static void SavePng(string path, byte[] bgra, int w, int h)
+        {
+            var bmp = new Avalonia.Media.Imaging.WriteableBitmap(
+                new PixelSize(w, h), new Avalonia.Vector(96, 96),
+                Avalonia.Platform.PixelFormat.Bgra8888, Avalonia.Platform.AlphaFormat.Unpremul);
+            using (Avalonia.Platform.ILockedFramebuffer fb = bmp.Lock())
+            {
+                int row = w * 4;
+                for (int y = 0; y < h; y++)
+                {
+                    System.Runtime.InteropServices.Marshal.Copy(bgra, y * row, IntPtr.Add(fb.Address, y * fb.RowBytes), row);
+                }
+            }
+            bmp.Save(path);
+        }
+
+        private async void OnLoadAnimations(object? sender, RoutedEventArgs e)
+        {
+            if (_vm.SelectedDocument is not MeshDocument mesh)
+            {
+                return;
+            }
+            try
+            {
+                IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(
+                    new FilePickerOpenOptions { Title = "Open anims.ubr", AllowMultiple = false });
+                if (files.Count == 0)
+                {
+                    return;
+                }
+                string? path = files[0].TryGetLocalPath();
+                if (string.IsNullOrEmpty(path))
+                {
+                    return;
+                }
+                byte[] bytes = await File.ReadAllBytesAsync(path);
+                if (!AnimDb.IsAnim(bytes))
+                {
+                    _vm.Log("not an ANIM (.ubr) database: " + path);
+                    return;
+                }
+                AnimDb db = AnimDb.Load(bytes);
+                mesh.SetAnimSource(db);
+                _vm.Log($"Loaded {db.RecordCount} animations; {mesh.AnimClips.Count} match this skeleton.");
+            }
+            catch (Exception ex)
+            {
+                _vm.Log("load animations failed: " + ex.Message);
+            }
+        }
+
+        // Swap one material to an empire variant (per-material NC/TR/VS buttons).
+        private void OnMaterialEmpire(object? sender, RoutedEventArgs e)
+        {
+            if (sender is Button { Tag: string empire, DataContext: MaterialSlot slot } &&
+                _vm.SelectedDocument is MeshDocument mesh)
+            {
+                mesh.ApplyEmpireToMaterial(slot, empire);
+            }
+        }
+
+        // Flip the whole model to an empire (the "stop showing NC on every model" action).
+        private void OnModelEmpire(object? sender, RoutedEventArgs e)
+        {
+            if (sender is Button { Tag: string empire } && _vm.SelectedDocument is MeshDocument mesh)
+            {
+                mesh.ApplyEmpireToModel(empire);
+            }
+        }
+
+        private void OnBrowserDoubleTapped(object? sender, TappedEventArgs e)
+        {
+            if (_vm.SelectedNode is BrowserNode node)
+            {
+                _vm.OpenNode(node);
+            }
+        }
+    }
+}
