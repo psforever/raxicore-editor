@@ -13,7 +13,54 @@
         Title="Raxicore Editor"
         Icon="/Assets/icon.png"
         TitleFontWeight="SemiBold"
+        IsMenuVisible="True"
         Background="{DynamicResource WindowBackgroundBrush}">
+
+  <!-- Title bar logo, immediately left of the merged-in menu bar. -->
+  <shadui:Window.LogoContent>
+    <Image Source="/Assets/icon.png" Width="16" Height="16" Margin="10,0,6,0" />
+  </shadui:Window.LogoContent>
+
+  <!-- Merged into the title bar (VSCode-style: logo, then menu, to the left of the centered title).
+       Headers use AccessText so the '_' renders as a hidden Alt-mnemonic (underlined on Alt), not a
+       literal underscore — ShadUI's MenuItem template doesn't recognise access keys on a plain string
+       header. -->
+  <shadui:Window.MenuBarContent>
+    <Menu>
+      <MenuItem>
+        <MenuItem.Header><AccessText Text="_File" /></MenuItem.Header>
+        <MenuItem Click="OnOpenFolder">
+          <MenuItem.Header><AccessText Text="_Open Folder…" /></MenuItem.Header>
+        </MenuItem>
+        <MenuItem Click="OnOpenArchive">
+          <MenuItem.Header><AccessText Text="Open _Archive…" /></MenuItem.Header>
+        </MenuItem>
+        <Separator />
+        <MenuItem Click="OnExport">
+          <MenuItem.Header><AccessText Text="_Export Active Document…" /></MenuItem.Header>
+        </MenuItem>
+        <MenuItem Click="OnExportObj">
+          <MenuItem.Header><AccessText Text="Export _Mesh as OBJ…" /></MenuItem.Header>
+        </MenuItem>
+        <Separator />
+        <MenuItem Click="OnExit">
+          <MenuItem.Header><AccessText Text="E_xit" /></MenuItem.Header>
+        </MenuItem>
+      </MenuItem>
+      <MenuItem>
+        <MenuItem.Header><AccessText Text="_View" /></MenuItem.Header>
+        <MenuItem>
+          <MenuItem.Header><AccessText Text="_Theme" /></MenuItem.Header>
+          <MenuItem Header="System" Click="OnThemeSystem"
+                    ToggleType="Radio" IsChecked="True" x:Name="ThemeSystemItem" />
+          <MenuItem Header="Light" Click="OnThemeLight"
+                    ToggleType="Radio" x:Name="ThemeLightItem" />
+          <MenuItem Header="Dark" Click="OnThemeDark"
+                    ToggleType="Radio" x:Name="ThemeDarkItem" />
+        </MenuItem>
+      </MenuItem>
+    </Menu>
+  </shadui:Window.MenuBarContent>
 
   <shadui:Window.Resources>
     <!-- Alpha checkerboard so DDS transparency reads clearly behind the texture. -->
@@ -215,44 +262,6 @@
   </shadui:Window.DataTemplates>
 
   <DockPanel>
-    <!-- Menu. Headers use AccessText so the '_' renders as a hidden Alt-mnemonic (underlined on Alt),
-         not a literal underscore — ShadUI's MenuItem template doesn't recognise access keys on a plain
-         string header. -->
-    <Menu DockPanel.Dock="Top">
-      <MenuItem>
-        <MenuItem.Header><AccessText Text="_File" /></MenuItem.Header>
-        <MenuItem Click="OnOpenFolder">
-          <MenuItem.Header><AccessText Text="_Open Folder…" /></MenuItem.Header>
-        </MenuItem>
-        <MenuItem Click="OnOpenArchive">
-          <MenuItem.Header><AccessText Text="Open _Archive…" /></MenuItem.Header>
-        </MenuItem>
-        <Separator />
-        <MenuItem Click="OnExport">
-          <MenuItem.Header><AccessText Text="_Export Active Document…" /></MenuItem.Header>
-        </MenuItem>
-        <MenuItem Click="OnExportObj">
-          <MenuItem.Header><AccessText Text="Export _Mesh as OBJ…" /></MenuItem.Header>
-        </MenuItem>
-        <Separator />
-        <MenuItem Click="OnExit">
-          <MenuItem.Header><AccessText Text="E_xit" /></MenuItem.Header>
-        </MenuItem>
-      </MenuItem>
-      <MenuItem>
-        <MenuItem.Header><AccessText Text="_View" /></MenuItem.Header>
-        <MenuItem>
-          <MenuItem.Header><AccessText Text="_Theme" /></MenuItem.Header>
-          <MenuItem Header="System" Click="OnThemeSystem"
-                    ToggleType="Radio" IsChecked="True" x:Name="ThemeSystemItem" />
-          <MenuItem Header="Light" Click="OnThemeLight"
-                    ToggleType="Radio" x:Name="ThemeLightItem" />
-          <MenuItem Header="Dark" Click="OnThemeDark"
-                    ToggleType="Radio" x:Name="ThemeDarkItem" />
-        </MenuItem>
-      </MenuItem>
-    </Menu>
-
     <!-- Console -->
     <Border DockPanel.Dock="Bottom" Height="140"
             Background="{DynamicResource PanelBackgroundBrush}"
