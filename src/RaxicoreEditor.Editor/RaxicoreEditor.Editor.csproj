@@ -44,6 +44,9 @@
     <EmbeddedResource Include="Rendering/Shaders/bone.frag.spv">
       <LogicalName>bone.frag.spv</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Rendering/Shaders/mesh_blend.frag.spv">
+      <LogicalName>mesh_blend.frag.spv</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- The GLSL sources are kept beside the .spv for reference; not compiled at build time. -->
@@ -52,6 +55,7 @@
     <None Include="Rendering/Shaders/mesh.frag" />
     <None Include="Rendering/Shaders/bone.vert" />
     <None Include="Rendering/Shaders/bone.frag" />
+    <None Include="Rendering/Shaders/mesh_blend.frag" />
   </ItemGroup>
 
   <!-- GLSL translations of the engine-derived reference client's original per-material Cg shaders

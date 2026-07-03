@@ -26,6 +26,10 @@ namespace RaxicoreEditor.Editor.Rendering
         private DescriptorSetLayout _descLayout;
         private PipelineLayout _pipelineLayout;
         private Pipeline _pipeline;
+        // Translucent overlay pass (shield domes, energy beams, shoreline foam — "mask" materials):
+        // same descriptor layout/push constants/vertex format as the opaque pipeline, so it reuses
+        // _pipelineLayout; only the fragment shader and blend/depth-write state differ.
+        private Pipeline _blendPipeline;
         private Sampler _sampler;
         private CommandBuffer _cmd;
         private Fence _fence;
@@ -51,6 +55,7 @@ namespace RaxicoreEditor.Editor.Rendering
             public DeviceMemory Imem;
             public uint IndexCount;
             public DescriptorSet DescSet;
+            public bool Translucent;
         }
         private struct GpuTexture
         {
@@ -77,6 +82,7 @@ namespace RaxicoreEditor.Editor.Rendering
             CreateRenderPass();
             CreateDescriptorLayoutAndSampler();
             CreatePipeline();
+            CreateBlendPipeline();
             CreateBonePipeline();
             AllocateCommandBuffer();
         }
@@ -131,6 +137,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 {
                     Vbuf = vbuf, Vmem = vmem, Ibuf = ibuf, Imem = imem,
                     IndexCount = (uint)s.Indices.Length, DescSet = descSets[ti],
+                    Translucent = s.IsTranslucent,
                 });
             }
         }
@@ -275,16 +282,30 @@ namespace RaxicoreEditor.Editor.Rendering
 
             if (_submeshes.Count > 0)
             {
-                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _pipeline);
-
                 var push = stackalloc float[32];
                 CopyMatrix(mvp, push);
                 CopyMatrix(model, push + 16);
                 _vk.CmdPushConstants(_cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, 128, push);
-
                 ulong offset = 0;
+
+                // Opaque/cutout pass first (depth write on), then translucent overlays (depth write
+                // off) so masks/shields/beams correctly composite over whatever is already drawn.
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _pipeline);
                 foreach (GpuSubmesh s in _submeshes)
                 {
+                    if (s.Translucent) continue;
+                    DescriptorSet ds = s.DescSet;
+                    _vk.CmdBindDescriptorSets(_cmd, PipelineBindPoint.Graphics, _pipelineLayout, 0, 1, &ds, 0, null);
+                    var vbuf = s.Vbuf;
+                    _vk.CmdBindVertexBuffers(_cmd, 0, 1, &vbuf, &offset);
+                    _vk.CmdBindIndexBuffer(_cmd, s.Ibuf, 0, IndexType.Uint32);
+                    _vk.CmdDrawIndexed(_cmd, s.IndexCount, 1, 0, 0, 0);
+                }
+
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _blendPipeline);
+                foreach (GpuSubmesh s in _submeshes)
+                {
+                    if (!s.Translucent) continue;
                     DescriptorSet ds = s.DescSet;
                     _vk.CmdBindDescriptorSets(_cmd, PipelineBindPoint.Graphics, _pipelineLayout, 0, 1, &ds, 0, null);
                     var vbuf = s.Vbuf;
@@ -720,6 +741,131 @@ namespace RaxicoreEditor.Editor.Rendering
             Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
         }
 
+        // Translucent overlay pipeline for "mask" materials (shield domes, energy beams, shoreline
+        // foam): identical vertex format, descriptor layout, and push-constant range as the opaque
+        // pipeline (reuses _pipelineLayout — only mesh_blend.frag, standard alpha blending, and
+        // depth-write-off differ), so these overlays composite over the opaque pass instead of either
+        // fully replacing it (as a hard alpha-test discard would) or corrupting the depth buffer for
+        // whatever's drawn after them.
+        private void CreateBlendPipeline()
+        {
+            ShaderModule vs = CreateShader(LoadEmbedded("mesh.vert.spv"));
+            ShaderModule fs = CreateShader(LoadEmbedded("mesh_blend.frag.spv"));
+            byte* entry = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("main");
+
+            var stages = stackalloc PipelineShaderStageCreateInfo[2];
+            stages[0] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.VertexBit,
+                Module = vs,
+                PName = entry,
+            };
+            stages[1] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.FragmentBit,
+                Module = fs,
+                PName = entry,
+            };
+
+            var binding = new VertexInputBindingDescription(0, 32, VertexInputRate.Vertex);
+            var attrs = stackalloc VertexInputAttributeDescription[3];
+            attrs[0] = new VertexInputAttributeDescription(0, 0, Format.R32G32B32Sfloat, 0);   // pos
+            attrs[1] = new VertexInputAttributeDescription(1, 0, Format.R32G32B32Sfloat, 12);  // normal
+            attrs[2] = new VertexInputAttributeDescription(2, 0, Format.R32G32Sfloat, 24);     // uv
+            var vi = new PipelineVertexInputStateCreateInfo
+            {
+                SType = StructureType.PipelineVertexInputStateCreateInfo,
+                VertexBindingDescriptionCount = 1,
+                PVertexBindingDescriptions = &binding,
+                VertexAttributeDescriptionCount = 3,
+                PVertexAttributeDescriptions = attrs,
+            };
+            var ia = new PipelineInputAssemblyStateCreateInfo
+            {
+                SType = StructureType.PipelineInputAssemblyStateCreateInfo,
+                Topology = PrimitiveTopology.TriangleList,
+            };
+            var vp = new PipelineViewportStateCreateInfo
+            {
+                SType = StructureType.PipelineViewportStateCreateInfo,
+                ViewportCount = 1,
+                ScissorCount = 1,
+            };
+            var rs = new PipelineRasterizationStateCreateInfo
+            {
+                SType = StructureType.PipelineRasterizationStateCreateInfo,
+                PolygonMode = PolygonMode.Fill,
+                CullMode = CullModeFlags.None,
+                FrontFace = FrontFace.CounterClockwise,
+                LineWidth = 1f,
+            };
+            var ms = new PipelineMultisampleStateCreateInfo
+            {
+                SType = StructureType.PipelineMultisampleStateCreateInfo,
+                RasterizationSamples = SampleCountFlags.Count1Bit,
+            };
+            var ds = new PipelineDepthStencilStateCreateInfo
+            {
+                SType = StructureType.PipelineDepthStencilStateCreateInfo,
+                DepthTestEnable = true,
+                DepthWriteEnable = false,
+                DepthCompareOp = CompareOp.Less,
+            };
+            var cba = new PipelineColorBlendAttachmentState
+            {
+                ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit |
+                                 ColorComponentFlags.BBit | ColorComponentFlags.ABit,
+                BlendEnable = true,
+                SrcColorBlendFactor = BlendFactor.SrcAlpha,
+                DstColorBlendFactor = BlendFactor.OneMinusSrcAlpha,
+                ColorBlendOp = BlendOp.Add,
+                SrcAlphaBlendFactor = BlendFactor.One,
+                DstAlphaBlendFactor = BlendFactor.OneMinusSrcAlpha,
+                AlphaBlendOp = BlendOp.Add,
+            };
+            var cb = new PipelineColorBlendStateCreateInfo
+            {
+                SType = StructureType.PipelineColorBlendStateCreateInfo,
+                AttachmentCount = 1,
+                PAttachments = &cba,
+            };
+            var dynStates = stackalloc DynamicState[2] { DynamicState.Viewport, DynamicState.Scissor };
+            var dyn = new PipelineDynamicStateCreateInfo
+            {
+                SType = StructureType.PipelineDynamicStateCreateInfo,
+                DynamicStateCount = 2,
+                PDynamicStates = dynStates,
+            };
+
+            var gp = new GraphicsPipelineCreateInfo
+            {
+                SType = StructureType.GraphicsPipelineCreateInfo,
+                StageCount = 2,
+                PStages = stages,
+                PVertexInputState = &vi,
+                PInputAssemblyState = &ia,
+                PViewportState = &vp,
+                PRasterizationState = &rs,
+                PMultisampleState = &ms,
+                PDepthStencilState = &ds,
+                PColorBlendState = &cb,
+                PDynamicState = &dyn,
+                Layout = _pipelineLayout,
+                RenderPass = _renderPass,
+                Subpass = 0,
+            };
+            Pipeline pipeline;
+            VulkanContext.Check(_vk.CreateGraphicsPipelines(_dev, default, 1, &gp, null, &pipeline),
+                "CreateGraphicsPipelines(blend)");
+            _blendPipeline = pipeline;
+
+            _vk.DestroyShaderModule(_dev, vs, null);
+            _vk.DestroyShaderModule(_dev, fs, null);
+            Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
+        }
+
         // Minimal line-list pipeline for the optional skeleton overlay: position+color vertices, a
         // single mat4 push constant (camera MVP only — bone positions are already fully composed in
         // view-space by SkeletalAnimator), no descriptor sets/textures. Depth-tested against the mesh
@@ -1034,6 +1180,7 @@ namespace RaxicoreEditor.Editor.Rendering
             if (_descLayout.Handle != 0) _vk.DestroyDescriptorSetLayout(_dev, _descLayout, null);
             if (_fence.Handle != 0) _vk.DestroyFence(_dev, _fence, null);
             if (_pipeline.Handle != 0) _vk.DestroyPipeline(_dev, _pipeline, null);
+            if (_blendPipeline.Handle != 0) _vk.DestroyPipeline(_dev, _blendPipeline, null);
             if (_pipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _pipelineLayout, null);
             if (_bonePipeline.Handle != 0) _vk.DestroyPipeline(_dev, _bonePipeline, null);
             if (_bonePipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _bonePipelineLayout, null);

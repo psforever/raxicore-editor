@@ -181,7 +181,10 @@ namespace RaxicoreEditor.EngineAssets.Textures
         }
 
         // Candidate texture keys, in priority order: the full material, then the suffix after the last
-        // '+' (map blend materials), then the prefix before it.
+        // '+' (map blend materials), then the prefix before it, then — as a last resort — the material
+        // with a "mask_" token inserted at each '_' boundary. Some translucent effect overlays (shield
+        // domes, energy beams) store their texture under a name the section material omits a token from,
+        // e.g. material "force_dome_amp_inner" → texture "force_dome_mask_amp_inner".
         private static IEnumerable<string> Candidates(string material)
         {
             yield return material;
@@ -190,6 +193,13 @@ namespace RaxicoreEditor.EngineAssets.Textures
             {
                 if (plus + 1 < material.Length) yield return material.Substring(plus + 1);
                 if (plus > 0) yield return material.Substring(0, plus);
+            }
+            for (int i = 0; i < material.Length; i++)
+            {
+                if (material[i] == '_')
+                {
+                    yield return material.Substring(0, i + 1) + "mask_" + material.Substring(i + 1);
+                }
             }
         }
 

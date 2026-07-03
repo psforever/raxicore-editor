@@ -52,6 +52,12 @@ namespace RaxicoreEditor.Editor.Documents
         /// <summary>The resolved texture key (base name, no extension) currently applied, or null.</summary>
         public string? TextureName { get; internal set; }
 
+        /// <summary>True when the resolved texture is a translucent overlay (shield domes, energy
+        /// beams, shoreline foam — the engine-derived "_mask_" naming convention) rather than an
+        /// opaque/cutout material, so the viewport draws it with real alpha blending instead of a
+        /// hard alpha-test discard.</summary>
+        public bool IsTranslucent { get; internal set; }
+
         /// <summary>Swap this submesh's texture (used by the per-material picker / empire swap).</summary>
         public void ApplyTexture(DdsImage? dds, string? name)
         {
@@ -59,7 +65,14 @@ namespace RaxicoreEditor.Editor.Documents
             TextureWidth = dds?.Width ?? 0;
             TextureHeight = dds?.Height ?? 0;
             TextureName = dds != null ? name : null;
+            IsTranslucent = IsMaskTextureName(dds != null ? name : null);
         }
+
+        /// <summary>Shared "is this a translucent-overlay texture" rule (see <see cref="IsTranslucent"/>),
+        /// so every construction path — auto-apply, the picker's manual swap, and instanced continent
+        /// scene objects — agrees on it.</summary>
+        internal static bool IsMaskTextureName(string? textureKey) =>
+            textureKey != null && textureKey.Contains("mask", StringComparison.OrdinalIgnoreCase);
 
         // Per-vertex skin data (Deform/FatDeform only; null otherwise). Bone indices reference the
         // owning part's skeleton; Weight is the 2-bone blend factor.
@@ -918,6 +931,7 @@ namespace RaxicoreEditor.Editor.Documents
                 TextureWidth = s.TextureWidth,
                 TextureHeight = s.TextureHeight,
                 TextureName = s.TextureName,
+                IsTranslucent = s.IsTranslucent,
             };
         }
 
@@ -979,6 +993,7 @@ namespace RaxicoreEditor.Editor.Documents
                     TextureWidth = dds?.Width ?? 0,
                     TextureHeight = dds?.Height ?? 0,
                     TextureName = dds != null ? key : null,
+                    IsTranslucent = MeshSubmesh.IsMaskTextureName(dds != null ? key : null),
                     BoneA = AnySkin ? SkinA.ToArray() : null,
                     BoneB = AnySkin ? SkinB.ToArray() : null,
                     Weight = AnySkin ? SkinW.ToArray() : null,
