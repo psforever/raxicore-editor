@@ -32,6 +32,8 @@ namespace RaxicoreEditor.Editor.Rendering
             _bindLocal = new Matrix4x4[n];
             _invBindWorld = new Matrix4x4[n];
             _skinView = new Matrix4x4[n];
+            _animWorldScratch = new Matrix4x4[n];
+            _boneWorldView = new Matrix4x4[n];
             _boneByName = new Dictionary<string, int>(n, StringComparer.OrdinalIgnoreCase);
 
             var bindWorld = new Matrix4x4[n];
@@ -54,6 +56,9 @@ namespace RaxicoreEditor.Editor.Rendering
 
         public int BoneCount => _skel.Bones.Count;
 
+        private readonly Matrix4x4[] _animWorldScratch;
+        private readonly Matrix4x4[] _boneWorldView; // reused output buffer for SampleBoneWorldsViewSpace
+
         /// <summary>
         /// Sample the clip at <paramref name="t"/> seconds and return view-space skinning matrices (one
         /// per bone). When <paramref name="clip"/> is null, returns bind-pose (all identity). The returned
@@ -61,8 +66,37 @@ namespace RaxicoreEditor.Editor.Rendering
         /// </summary>
         public Matrix4x4[] Sample(AnimRecord? clip, float t)
         {
+            Matrix4x4[] animWorld = ComputeAnimWorld(clip, t);
+            int n = animWorld.Length;
+            for (int i = 0; i < n; i++)
+            {
+                Matrix4x4 skinNative = _invBindWorld[i] * animWorld[i];
+                _skinView[i] = Vinv * skinNative * V;
+            }
+            return _skinView;
+        }
+
+        /// <summary>
+        /// Sample the clip and return each bone's own view-space WORLD transform (not a skin delta) — the
+        /// bone's actual posed position/orientation, for drawing a skeleton overlay. <c>.Translation</c> on
+        /// the result is the joint position. Reused array between calls, same rules as <see cref="Sample"/>.
+        /// </summary>
+        public Matrix4x4[] SampleBoneWorldsViewSpace(AnimRecord? clip, float t)
+        {
+            Matrix4x4[] animWorld = ComputeAnimWorld(clip, t);
+            int n = animWorld.Length;
+            for (int i = 0; i < n; i++)
+            {
+                _boneWorldView[i] = Vinv * animWorld[i] * V;
+            }
+            return _boneWorldView;
+        }
+
+        // Forward-kinematics compose: per-bone local transform (animated if a track exists, else bind)
+        // composed with the parent's already-computed world transform. Native (Z-up) space.
+        private Matrix4x4[] ComputeAnimWorld(AnimRecord? clip, float t)
+        {
             int n = _skel.Bones.Count;
-            var animWorld = new Matrix4x4[n];
             for (int i = 0; i < n; i++)
             {
                 UberModel.Bone bone = _skel.Bones[i];
@@ -73,14 +107,9 @@ namespace RaxicoreEditor.Editor.Rendering
                     local = Local(tr.SamplePosition(t), tr.SampleRotation(t));
                 }
                 int p = bone.Parent;
-                animWorld[i] = (p >= 0 && p < n) ? local * animWorld[p] : local;
+                _animWorldScratch[i] = (p >= 0 && p < n) ? local * _animWorldScratch[p] : local;
             }
-            for (int i = 0; i < n; i++)
-            {
-                Matrix4x4 skinNative = _invBindWorld[i] * animWorld[i];
-                _skinView[i] = Vinv * skinNative * V;
-            }
-            return _skinView;
+            return _animWorldScratch;
         }
 
         private static AnimTrack? FindTrack(AnimRecord clip, string boneName)

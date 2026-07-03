@@ -172,10 +172,14 @@ namespace RaxicoreEditor.Editor.Rendering
             _part = _doc?.SelectedPart;
             _skinBuffers = Array.Empty<float[]?>();
             _skinnedIndices = Array.Empty<int>();
-            if (_part?.Skeleton == null || !_part.IsSkinned)
+            if (_part?.Skeleton == null)
             {
                 return;
             }
+            // Build the animator whenever a skeleton exists, not just for vertex-skinned parts — most
+            // bones in this engine drive RIGID mesh-on-bone parts (doors, turrets), not vertex skinning,
+            // and the skeleton overlay (below) should work for those too. The skin-buffer setup that
+            // follows still only populates entries for truly vertex-skinned submeshes.
             _animator = new SkeletalAnimator(_part.Skeleton);
             var buffers = new float[]?[_part.Submeshes.Count];
             var idxs = new System.Collections.Generic.List<int>();
@@ -271,6 +275,60 @@ namespace RaxicoreEditor.Editor.Rendering
             }
         }
 
+        // Bright, consistent color for every bone segment — high-contrast against most model textures.
+        private static readonly Vector3 BoneLineColor = new(0.15f, 1f, 0.35f);
+
+        /// <summary>
+        /// Rebuild and upload the skeleton-overlay line list for the current frame: one segment per
+        /// non-root bone, from its own joint position to its parent's — in whatever pose the mesh is
+        /// currently showing (bind pose, or the active clip at the current playback time), so the
+        /// overlay always matches what's actually posed on screen.
+        /// </summary>
+        private void UpdateSkeletonLines()
+        {
+            if (_renderer == null)
+            {
+                return;
+            }
+            if (_animator == null || _doc is not { ShowSkeleton: true } || _part?.Skeleton == null)
+            {
+                _renderer.ClearSkeletonLines();
+                return;
+            }
+
+            var bones = _part.Skeleton.Bones;
+            Matrix4x4[] boneWorld = _animator.SampleBoneWorldsViewSpace(_doc.ActiveClip, _doc.AnimTime);
+
+            var verts = new float[bones.Count * 2 * 6]; // up to 2 vertices * 6 floats per non-root bone
+            int o = 0;
+            for (int i = 0; i < bones.Count; i++)
+            {
+                int p = bones[i].Parent;
+                if (p < 0 || p >= bones.Count)
+                {
+                    continue; // root bone — no parent segment to draw
+                }
+                Vector3 childPos = boneWorld[i].Translation;
+                Vector3 parentPos = boneWorld[p].Translation;
+                o = WriteVertex(verts, o, parentPos, BoneLineColor);
+                o = WriteVertex(verts, o, childPos, BoneLineColor);
+            }
+
+            if (o < verts.Length)
+            {
+                Array.Resize(ref verts, o);
+            }
+            _renderer.SetSkeletonLines(verts);
+            _needsRender = true;
+        }
+
+        private static int WriteVertex(float[] dst, int o, Vector3 pos, Vector3 color)
+        {
+            dst[o++] = pos.X; dst[o++] = pos.Y; dst[o++] = pos.Z;
+            dst[o++] = color.X; dst[o++] = color.Y; dst[o++] = color.Z;
+            return o;
+        }
+
         private void Tick()
         {
             if (_renderer == null)
@@ -293,6 +351,8 @@ namespace RaxicoreEditor.Editor.Rendering
                 SkinAndUpload(t);
                 _needsRender = true;
             }
+
+            UpdateSkeletonLines();
 
             if (!_needsRender)
             {

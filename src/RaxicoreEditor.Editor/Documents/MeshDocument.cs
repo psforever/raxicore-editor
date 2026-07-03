@@ -194,6 +194,7 @@ namespace RaxicoreEditor.Editor.Documents
                     RaisePropertyChanged(nameof(HasMesh));
                     RaisePropertyChanged(nameof(PartInfo));
                     RaisePropertyChanged(nameof(CanAnimate));
+                    RaisePropertyChanged(nameof(HasSkeleton));
                     RebuildMaterials();
                     if (AnimSource != null) SetAnimSource(AnimSource); // re-filter clips for the new skeleton
                     GeometryChanged?.Invoke();
@@ -464,6 +465,21 @@ namespace RaxicoreEditor.Editor.Documents
         public event Action? AnimChanged;
 
         public bool CanAnimate => _selectedPart?.IsSkinned ?? false;
+
+        /// <summary>
+        /// True when the selected part carries a skeleton at all — a broader gate than
+        /// <see cref="CanAnimate"/>: most parts with bones are RIGID mesh-on-bone (doors, turrets,
+        /// bridges), not vertex-skinned, but still have real bone data worth visualizing.
+        /// </summary>
+        public bool HasSkeleton => _selectedPart?.Skeleton != null;
+
+        private bool _showSkeleton;
+        /// <summary>Toggle the skeleton-overlay line render in the viewport.</summary>
+        public bool ShowSkeleton
+        {
+            get => _showSkeleton;
+            set => SetProperty(ref _showSkeleton, value);
+        }
 
         /// <summary>Playback cursor in seconds (advanced by the viewport while playing).</summary>
         public float AnimTime { get; set; }

@@ -525,6 +525,17 @@
                   <ToggleButton Content="Play / Pause" IsChecked="{Binding IsPlaying, Mode=TwoWay}"
                                 HorizontalAlignment="Stretch" />
                 </StackPanel>
+
+                <!-- Skeleton overlay — any part with bones qualifies, not just vertex-skinned ones:
+                     most bones in this engine drive RIGID mesh-on-bone parts (doors, turrets), which
+                     have no animation panel above but still have real bone data worth visualizing. -->
+                <StackPanel Margin="0,12,0,0" Spacing="6"
+                            IsVisible="{Binding HasSkeleton, FallbackValue=False}">
+                  <TextBlock Text="SKELETON" FontSize="11" FontWeight="SemiBold"
+                             Foreground="{DynamicResource SubtleTextBrush}" />
+                  <ToggleButton Content="Show Bones" IsChecked="{Binding ShowSkeleton, Mode=TwoWay}"
+                                HorizontalAlignment="Stretch" />
+                </StackPanel>
               </StackPanel>
             </ScrollViewer>
           </DockPanel>

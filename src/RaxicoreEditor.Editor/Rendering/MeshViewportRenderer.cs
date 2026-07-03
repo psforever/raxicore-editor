@@ -62,6 +62,13 @@ namespace RaxicoreEditor.Editor.Rendering
         private readonly List<GpuTexture> _textures = new();
         private DescriptorPool _descPool;
 
+        // Optional skeleton-overlay line list (position+color per vertex; drawn after the mesh).
+        private PipelineLayout _bonePipelineLayout;
+        private Pipeline _bonePipeline;
+        private Silk.NET.Vulkan.Buffer _boneVbuf;
+        private DeviceMemory _boneVmem;
+        private uint _boneVertexCount;
+
         public MeshViewportRenderer(VulkanContext ctx)
         {
             _ctx = ctx;
@@ -70,6 +77,7 @@ namespace RaxicoreEditor.Editor.Rendering
             CreateRenderPass();
             CreateDescriptorLayoutAndSampler();
             CreatePipeline();
+            CreateBonePipeline();
             AllocateCommandBuffer();
         }
 
@@ -79,6 +87,7 @@ namespace RaxicoreEditor.Editor.Rendering
         {
             _vk.DeviceWaitIdle(_dev);
             DestroyMesh();
+            ClearSkeletonLines(); // a newly loaded model's skeleton (if any) is rebuilt separately
             if (submeshes.Count == 0)
             {
                 return;
@@ -153,6 +162,33 @@ namespace RaxicoreEditor.Editor.Rendering
                 System.Buffer.MemoryCopy(src, mapped, size, size);
             }
             _vk.UnmapMemory(_dev, s.Vmem);
+        }
+
+        // ---- skeleton overlay ------------------------------------------------------------------
+
+        /// <summary>
+        /// Replace the skeleton-overlay line list. <paramref name="posColor"/> is interleaved
+        /// (px,py,pz, r,g,b) per vertex, 2 vertices per bone-to-parent segment (already in view-space —
+        /// positions are drawn with just the camera MVP, no per-vertex skinning/model transform).
+        /// </summary>
+        public void SetSkeletonLines(float[] posColor)
+        {
+            ClearSkeletonLines();
+            uint vertexCount = (uint)(posColor.Length / 6);
+            if (vertexCount == 0)
+            {
+                return;
+            }
+            (_boneVbuf, _boneVmem) = CreateHostBuffer<float>(posColor, BufferUsageFlags.VertexBufferBit);
+            _boneVertexCount = vertexCount;
+        }
+
+        public void ClearSkeletonLines()
+        {
+            if (_boneVbuf.Handle != 0) { _vk.DestroyBuffer(_dev, _boneVbuf, null); _vk.FreeMemory(_dev, _boneVmem, null); }
+            _boneVbuf = default;
+            _boneVmem = default;
+            _boneVertexCount = 0;
         }
 
         // ---- offscreen sizing ------------------------------------------------------------------
@@ -256,6 +292,18 @@ namespace RaxicoreEditor.Editor.Rendering
                     _vk.CmdBindIndexBuffer(_cmd, s.Ibuf, 0, IndexType.Uint32);
                     _vk.CmdDrawIndexed(_cmd, s.IndexCount, 1, 0, 0, 0);
                 }
+            }
+
+            if (_boneVertexCount > 0)
+            {
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _bonePipeline);
+                var bonePush = stackalloc float[16];
+                CopyMatrix(mvp, bonePush);
+                _vk.CmdPushConstants(_cmd, _bonePipelineLayout, ShaderStageFlags.VertexBit, 0, 64, bonePush);
+                ulong boneOffset = 0;
+                var boneVbuf = _boneVbuf;
+                _vk.CmdBindVertexBuffers(_cmd, 0, 1, &boneVbuf, &boneOffset);
+                _vk.CmdDraw(_cmd, _boneVertexCount, 1, 0, 0);
             }
 
             _vk.CmdEndRenderPass(_cmd);
@@ -672,6 +720,135 @@ namespace RaxicoreEditor.Editor.Rendering
             Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
         }
 
+        // Minimal line-list pipeline for the optional skeleton overlay: position+color vertices, a
+        // single mat4 push constant (camera MVP only — bone positions are already fully composed in
+        // view-space by SkeletalAnimator), no descriptor sets/textures. Depth-tested against the mesh
+        // (so bones are correctly hidden behind opaque geometry) but not depth-written, so overlapping
+        // bone segments don't fight each other and nothing after them is affected.
+        private void CreateBonePipeline()
+        {
+            ShaderModule vs = CreateShader(LoadEmbedded("bone.vert.spv"));
+            ShaderModule fs = CreateShader(LoadEmbedded("bone.frag.spv"));
+            byte* entry = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("main");
+
+            var pcRange = new PushConstantRange(ShaderStageFlags.VertexBit, 0, 64);
+            var plci = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+                SetLayoutCount = 0,
+                PushConstantRangeCount = 1,
+                PPushConstantRanges = &pcRange,
+            };
+            PipelineLayout pipelineLayout;
+            VulkanContext.Check(_vk.CreatePipelineLayout(_dev, &plci, null, &pipelineLayout), "BonePipelineLayout");
+            _bonePipelineLayout = pipelineLayout;
+
+            var stages = stackalloc PipelineShaderStageCreateInfo[2];
+            stages[0] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.VertexBit,
+                Module = vs,
+                PName = entry,
+            };
+            stages[1] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.FragmentBit,
+                Module = fs,
+                PName = entry,
+            };
+
+            var binding = new VertexInputBindingDescription(0, 24, VertexInputRate.Vertex);
+            var attrs = stackalloc VertexInputAttributeDescription[2];
+            attrs[0] = new VertexInputAttributeDescription(0, 0, Format.R32G32B32Sfloat, 0);   // pos
+            attrs[1] = new VertexInputAttributeDescription(1, 0, Format.R32G32B32Sfloat, 12);  // color
+            var vi = new PipelineVertexInputStateCreateInfo
+            {
+                SType = StructureType.PipelineVertexInputStateCreateInfo,
+                VertexBindingDescriptionCount = 1,
+                PVertexBindingDescriptions = &binding,
+                VertexAttributeDescriptionCount = 2,
+                PVertexAttributeDescriptions = attrs,
+            };
+            var ia = new PipelineInputAssemblyStateCreateInfo
+            {
+                SType = StructureType.PipelineInputAssemblyStateCreateInfo,
+                Topology = PrimitiveTopology.LineList,
+            };
+            var vp = new PipelineViewportStateCreateInfo
+            {
+                SType = StructureType.PipelineViewportStateCreateInfo,
+                ViewportCount = 1,
+                ScissorCount = 1,
+            };
+            var rs = new PipelineRasterizationStateCreateInfo
+            {
+                SType = StructureType.PipelineRasterizationStateCreateInfo,
+                PolygonMode = PolygonMode.Fill,
+                CullMode = CullModeFlags.None,
+                FrontFace = FrontFace.CounterClockwise,
+                LineWidth = 1f,
+            };
+            var ms = new PipelineMultisampleStateCreateInfo
+            {
+                SType = StructureType.PipelineMultisampleStateCreateInfo,
+                RasterizationSamples = SampleCountFlags.Count1Bit,
+            };
+            var ds = new PipelineDepthStencilStateCreateInfo
+            {
+                SType = StructureType.PipelineDepthStencilStateCreateInfo,
+                DepthTestEnable = true,
+                DepthWriteEnable = false,
+                DepthCompareOp = CompareOp.Less,
+            };
+            var cba = new PipelineColorBlendAttachmentState
+            {
+                ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit |
+                                 ColorComponentFlags.BBit | ColorComponentFlags.ABit,
+                BlendEnable = false,
+            };
+            var cb = new PipelineColorBlendStateCreateInfo
+            {
+                SType = StructureType.PipelineColorBlendStateCreateInfo,
+                AttachmentCount = 1,
+                PAttachments = &cba,
+            };
+            var dynStates = stackalloc DynamicState[2] { DynamicState.Viewport, DynamicState.Scissor };
+            var dyn = new PipelineDynamicStateCreateInfo
+            {
+                SType = StructureType.PipelineDynamicStateCreateInfo,
+                DynamicStateCount = 2,
+                PDynamicStates = dynStates,
+            };
+
+            var gp = new GraphicsPipelineCreateInfo
+            {
+                SType = StructureType.GraphicsPipelineCreateInfo,
+                StageCount = 2,
+                PStages = stages,
+                PVertexInputState = &vi,
+                PInputAssemblyState = &ia,
+                PViewportState = &vp,
+                PRasterizationState = &rs,
+                PMultisampleState = &ms,
+                PDepthStencilState = &ds,
+                PColorBlendState = &cb,
+                PDynamicState = &dyn,
+                Layout = _bonePipelineLayout,
+                RenderPass = _renderPass,
+                Subpass = 0,
+            };
+            Pipeline pipeline;
+            VulkanContext.Check(_vk.CreateGraphicsPipelines(_dev, default, 1, &gp, null, &pipeline),
+                "CreateGraphicsPipelines(bone)");
+            _bonePipeline = pipeline;
+
+            _vk.DestroyShaderModule(_dev, vs, null);
+            _vk.DestroyShaderModule(_dev, fs, null);
+            Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
+        }
+
         private void AllocateCommandBuffer()
         {
             var ai = new CommandBufferAllocateInfo
@@ -851,12 +1028,15 @@ namespace RaxicoreEditor.Editor.Rendering
             }
             _vk.DeviceWaitIdle(_dev);
             DestroyMesh();
+            ClearSkeletonLines();
             DestroyTargets();
             if (_sampler.Handle != 0) _vk.DestroySampler(_dev, _sampler, null);
             if (_descLayout.Handle != 0) _vk.DestroyDescriptorSetLayout(_dev, _descLayout, null);
             if (_fence.Handle != 0) _vk.DestroyFence(_dev, _fence, null);
             if (_pipeline.Handle != 0) _vk.DestroyPipeline(_dev, _pipeline, null);
             if (_pipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _pipelineLayout, null);
+            if (_bonePipeline.Handle != 0) _vk.DestroyPipeline(_dev, _bonePipeline, null);
+            if (_bonePipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _bonePipelineLayout, null);
             if (_renderPass.Handle != 0) _vk.DestroyRenderPass(_dev, _renderPass, null);
         }
     }
