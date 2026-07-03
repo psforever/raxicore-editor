@@ -574,8 +574,29 @@ namespace RaxicoreEditor.Editor.Documents
         {
             int bang = source.IndexOf('!');
             string file = bang >= 0 ? source.Substring(0, bang) : source;
-            try { return Path.GetDirectoryName(file); }
+            try { return FindAssetRoot(Path.GetDirectoryName(file)); }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// The true asset root, not just the folder a model happens to sit in. A model opened from
+        /// <c>expansion1/</c>, <c>patch1-5/</c>, or <c>patchmap/mapNN/</c> would otherwise get a
+        /// <see cref="TextureProvider"/> scoped to that one subfolder — missing the root's and
+        /// <c>pack/</c>'s shared texture archives that most materials actually resolve against, and
+        /// breaking the root-relative <c>maps/map_resources.pak</c> + <c>uber.ubr</c> lookups in
+        /// <see cref="AppendContinentObjects"/>. <c>uber.ubr</c> only ever exists at the true root, so
+        /// walk upward looking for it (bounded, so an unrelated folder layout just falls back to the
+        /// immediate directory instead of misbehaving).
+        /// </summary>
+        private static string? FindAssetRoot(string? dir)
+        {
+            string? d = dir;
+            for (int i = 0; i < 4 && !string.IsNullOrEmpty(d); i++)
+            {
+                if (File.Exists(Path.Combine(d, "uber.ubr"))) return d;
+                d = Path.GetDirectoryName(d);
+            }
+            return dir;
         }
 
         private void Assemble(byte[] data, string? assetDir)
