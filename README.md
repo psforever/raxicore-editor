@@ -23,6 +23,8 @@ content formats used by an engine-derived client.
 > **You need your own copy of the engine-derived game assets.** No game data is included or
 > distributed with this project.
 
+<img src="docs/assets/img/screenshot.png" alt="Raxicore Editor showing a continent — terrain, water, and scene objects in the 3D viewport, with the asset browser and inspector" width="900" />
+
 ## Features
 
 - **Asset browser** — mount a folder or open an archive; a role-grouped catalog (Continents, Models,
