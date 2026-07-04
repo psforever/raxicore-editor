@@ -56,6 +56,10 @@ namespace RaxicoreEditor.Editor.Theming
                 Set("TextBrush", 0xFFFAFAFA);             // foreground
                 Set("SubtleTextBrush", 0xFFA1A1AA);       // muted (zinc-400)
                 Set("AccentBrush", 0xFF60A5FA);
+                // Darker accents in dark mode (red-700 / blue-700 / violet-700).
+                Set("AccentRedBrush", 0xFFB91C1C);
+                Set("AccentBlueBrush", 0xFF1D4ED8);
+                Set("AccentPurpleBrush", 0xFF6D28D9);
             }
             else
             {
@@ -67,6 +71,10 @@ namespace RaxicoreEditor.Editor.Theming
                 Set("TextBrush", 0xFF09090B);
                 Set("SubtleTextBrush", 0xFF71717A);       // zinc-500
                 Set("AccentBrush", 0xFF2563EB);
+                // Lighter accents in light mode (red-400 / blue-400 / violet-400).
+                Set("AccentRedBrush", 0xFFF87171);
+                Set("AccentBlueBrush", 0xFF60A5FA);
+                Set("AccentPurpleBrush", 0xFFA78BFA);
             }
         }
 

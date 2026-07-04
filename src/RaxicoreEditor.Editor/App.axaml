@@ -16,5 +16,10 @@
     <SolidColorBrush x:Key="TextBrush" Color="#d7dbe2" />
     <SolidColorBrush x:Key="SubtleTextBrush" Color="#8a93a0" />
     <SolidColorBrush x:Key="AccentBrush" Color="#4f9be0" />
+    <!-- Red / blue / purple UI accents. ThemeManager swaps these to darker shades in dark mode and
+         lighter shades in light mode; defaults below are the dark-mode (darker) values. -->
+    <SolidColorBrush x:Key="AccentRedBrush" Color="#b91c1c" />
+    <SolidColorBrush x:Key="AccentBlueBrush" Color="#1d4ed8" />
+    <SolidColorBrush x:Key="AccentPurpleBrush" Color="#6d28d9" />
   </Application.Resources>
 </Application>
