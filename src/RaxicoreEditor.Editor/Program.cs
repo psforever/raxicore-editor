@@ -9,11 +9,6 @@ namespace RaxicoreEditor.Editor
         [STAThread]
         public static void Main(string[] args)
         {
-            if (args.Length >= 2 && args[0] == "--selftest")
-            {
-                Environment.Exit(SelfTest.Run(args[1]));
-                return;
-            }
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
 

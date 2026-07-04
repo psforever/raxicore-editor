@@ -72,12 +72,6 @@ dotnet run --project src/RaxicoreEditor.Editor
 
 Then **File → Open Folder…** and point it at your engine-derived game's install directory.
 
-A headless validation harness runs the format readers against real shipped files:
-
-```bash
-dotnet run --project src/RaxicoreEditor.Editor -- --selftest <path-to-asset-or-folder>
-```
-
 ## Project layout
 
 ```
