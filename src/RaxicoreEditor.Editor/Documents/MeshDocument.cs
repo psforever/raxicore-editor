@@ -948,30 +948,25 @@ namespace RaxicoreEditor.Editor.Documents
             };
         }
 
-        // materials.adb defines a few continent surfaces (notably water) as named render materials rather
-        // than direct textures, so ResolveNamed can't find them and they fall back to the 1×1 white
-        // texture — that's the flat white "water" plane. The editor has no materials.adb resolver, so map
-        // the visually-important ones to the engine's own water-surface / seabed textures. "water" is
-        // additionally drawn translucent (a fixed alpha) so it reads like the original's semi-transparent
-        // water rather than an opaque sheet. Resolved copies are cached and shared by reference so the
-        // renderer's texture dedup collapses the ~800 water tiles to a single GPU texture.
+        // "water" is a materials.adb render-material definition, not a direct texture, so ResolveNamed
+        // finds nothing and it falls back to the 1×1 white texture — the flat white "water" plane. Map it
+        // to the engine's own water surface texture and draw it translucent so it reads like the original's
+        // semi-transparent water. The resolved copy is cached and shared by reference so the renderer's
+        // texture dedup collapses the ~800 water tiles to a single GPU texture.
         private readonly record struct AliasTex(byte[] Bgra, int Width, int Height, bool Translucent);
 
         private static readonly (string Material, string Texture, byte Alpha)[] MaterialAliases =
         {
-            // ~0.88 opacity: deep water reads as solid dark-teal (the bright rocky seabed a few units
-            // below doesn't show through as noise), while the slight translucency still hints at the
-            // bottom in the shallows near shore.
-            ("water", "old_water", 224),
-            ("ocean_floor", "underwater", 255), // opaque seabed beneath the water
+            // ~0.90 opacity: deep water reads as solid dark-teal from above; the slight translucency only
+            // hints at the bottom in the shallows near shore.
+            ("water", "old_water", 230),
         };
 
-        // The water sheet is baked coplanar with the seabed terrain (both sit at essentially the same
-        // height across the open ocean), so without separation they z-fight. Lift the water a few world
-        // units — enough to win the depth test cleanly at any zoom now that the camera's near/far hug the
-        // scene, yet far too small (vs. the terrain's tens-of-units relief) for islands to stop occluding
-        // it or for the raised shoreline to be visible.
-        private const float WaterLiftY = 6f;
+        // "ocean_floor" is the engine's abyssal fill plane far below the water, not a visible seabed —
+        // the reference client effectively skips the ocean chunk, so drawing it produced a confusing flat
+        // plane beneath the water. Drop it.
+        private static bool IsSkippedMaterial(string material) =>
+            material.Equals("ocean_floor", StringComparison.OrdinalIgnoreCase);
 
         private static readonly Dictionary<string, AliasTex?> AliasCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly object AliasLock = new();
@@ -1023,7 +1018,7 @@ namespace RaxicoreEditor.Editor.Documents
 
             public MeshSubmesh? Build(TextureProvider textures)
             {
-                if (Pos.Count == 0 || Idx.Count < 3)
+                if (Pos.Count == 0 || Idx.Count < 3 || IsSkippedMaterial(Material))
                 {
                     return null;
                 }
@@ -1046,10 +1041,9 @@ namespace RaxicoreEditor.Editor.Documents
                 int texW = dds?.Width ?? 0, texH = dds?.Height ?? 0;
                 string? texName = dds != null ? key : null;
                 bool translucent = MeshSubmesh.IsMaskTextureName(texName);
-                bool water = false;
 
-                // Fall back to the materials.adb material aliases (water/seabed) when there's no direct
-                // texture, so continent water renders as translucent water instead of a white plane.
+                // Fall back to the "water" material alias when there's no direct texture, so continent
+                // water renders as translucent water instead of a white plane.
                 if (dds == null && ResolveMaterialAlias(textures, Material) is AliasTex alias)
                 {
                     texBgra = alias.Bgra;
@@ -1057,14 +1051,6 @@ namespace RaxicoreEditor.Editor.Documents
                     texH = alias.Height;
                     texName = Material;
                     translucent = alias.Translucent;
-                    water = Material.Equals("water", StringComparison.OrdinalIgnoreCase);
-                }
-
-                // Nudge the water sheet just above the coplanar seabed (view Y is up) so it stops
-                // z-fighting the terrain beneath it. See WaterLiftY.
-                if (water)
-                {
-                    for (int i = 1; i < verts.Length; i += 8) verts[i] += WaterLiftY;
                 }
 
                 return new MeshSubmesh
