@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using RaxicoreEditor.EngineAssets.Databases;
 
 namespace RaxicoreEditor.EngineAssets.Textures
 {
@@ -26,8 +27,13 @@ namespace RaxicoreEditor.EngineAssets.Textures
 
         private readonly Dictionary<string, Entry> _index = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, DdsImage?> _cache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly MaterialsAdb? _materials;
 
         public int IndexedTextureCount => _index.Count;
+
+        /// <summary>The engine material database (startup.pak → materials.adb), or null if unavailable. Its
+        /// mat_texture1 is the authoritative name→texture link and its pipeline gives translucency.</summary>
+        public MaterialsAdb? Materials => _materials;
 
         /// <summary>Every indexed texture key (base name, no <c>.dds</c>), for a picker UI.</summary>
         public IReadOnlyCollection<string> TextureNames => _index.Keys;
@@ -49,6 +55,7 @@ namespace RaxicoreEditor.EngineAssets.Textures
                 try { IndexArchive(fat); }
                 catch { /* skip an unreadable/foreign archive */ }
             }
+            _materials = MaterialsAdb.TryLoad(assetDir);
         }
 
         private void IndexArchive(string fatPath)
@@ -95,6 +102,16 @@ namespace RaxicoreEditor.EngineAssets.Textures
             {
                 return (null, null);
             }
+            // Authoritative: materials.adb states the exact texture the engine binds for this material
+            // (often a differently-named texture than the material — e.g. "building_surface" → "alien1").
+            if (_materials?.Lookup(materialName) is MaterialsAdb.MaterialDef def && def.Texture != null &&
+                _index.ContainsKey(def.Texture))
+            {
+                DdsImage? img = Get(def.Texture);
+                if (img != null) return (img, def.Texture);
+            }
+            // Fallback heuristic: the base-name-as-texture case (materials.adb stubs whose texture is just
+            // the material name), terrain blends, and mask overlays.
             foreach (string candidate in Candidates(materialName))
             {
                 if (_index.ContainsKey(candidate))
@@ -173,6 +190,11 @@ namespace RaxicoreEditor.EngineAssets.Textures
 
         public bool CanResolve(string materialName)
         {
+            if (_materials?.Lookup(materialName) is MaterialsAdb.MaterialDef def && def.Texture != null &&
+                _index.ContainsKey(def.Texture))
+            {
+                return true;
+            }
             foreach (string candidate in Candidates(materialName))
             {
                 if (_index.ContainsKey(candidate)) return true;
@@ -201,11 +223,14 @@ namespace RaxicoreEditor.EngineAssets.Textures
             {
                 string prefix = plus > 0 ? material.Substring(0, plus) : "";
                 string suffix = plus + 1 < material.Length ? material.Substring(plus + 1) : "";
-                bool suffixIsLightmap = suffix.StartsWith("_", StringComparison.Ordinal);
-                string first = suffixIsLightmap ? prefix : suffix;   // the base texture half
-                string second = suffixIsLightmap ? suffix : prefix;
-                if (first.Length > 0) yield return first;
-                if (second.Length > 0) yield return second;
+                // "<base>+null" has no lightmap, so the base (prefix) is the texture. "null" is a sentinel,
+                // NOT a real texture — even though a blank texture literally named "null" is shipped — so it
+                // must never be tried as one (that painted the sea and other "+null" surfaces white).
+                bool suffixIsBase = suffix.StartsWith("_", StringComparison.Ordinal) || IsNullToken(suffix);
+                string first = suffixIsBase ? prefix : suffix;   // the base texture half
+                string second = suffixIsBase ? suffix : prefix;
+                if (first.Length > 0 && !IsNullToken(first)) yield return first;
+                if (second.Length > 0 && !IsNullToken(second)) yield return second;
             }
             for (int i = 0; i < material.Length; i++)
             {
@@ -215,6 +240,8 @@ namespace RaxicoreEditor.EngineAssets.Textures
                 }
             }
         }
+
+        private static bool IsNullToken(string s) => s.Equals("null", StringComparison.OrdinalIgnoreCase);
 
         private static string ToKey(string entryName)
         {
