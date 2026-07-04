@@ -60,6 +60,17 @@
           <MenuItem Header="Dark" Click="OnThemeDark"
                     ToggleType="Radio" x:Name="ThemeDarkItem" />
         </MenuItem>
+        <MenuItem>
+          <MenuItem.Header><AccessText Text="_Accenting" /></MenuItem.Header>
+          <MenuItem Header="Tradition" Click="OnStatusTradition"
+                    ToggleType="Radio" x:Name="StatusTraditionItem" />
+          <MenuItem Header="Liberty" Click="OnStatusLiberty"
+                    ToggleType="Radio" x:Name="StatusLibertyItem" />
+          <MenuItem Header="Technology" Click="OnStatusTechnology"
+                    ToggleType="Radio" IsChecked="True" x:Name="StatusTechnologyItem" />
+          <MenuItem Header="Disruption" Click="OnStatusDisruption"
+                    ToggleType="Radio" x:Name="StatusDisruptionItem" />
+        </MenuItem>
       </MenuItem>
     </Menu>
   </shadui:Window.MenuBarContent>
@@ -100,14 +111,15 @@
                       <Border ClipToBounds="True"
                               CornerRadius="{TemplateBinding RootCornerRadius, Converter={x:Static shadui:CornerRadiusConverters.TopOnly}}">
                         <Panel Margin="0,-1,0,0">
-                          <!-- Title-bar accent sweep: blue → purple → red, left to right. The inline
-                               Background overrides ShadUI's PART_TitleBarBackground style setter. -->
+                          <!-- Title-bar accent sweep: blue → purple → red, left to right. Muted per theme
+                               (much darker in dark mode, much lighter in light mode) via the TitleBar*
+                               colors. The inline Background overrides ShadUI's PART_TitleBarBackground. -->
                           <Border Name="PART_TitleBarBackground">
                             <Border.Background>
                               <LinearGradientBrush StartPoint="0%,50%" EndPoint="100%,50%">
-                                <GradientStop Offset="0" Color="{DynamicResource AccentBlueColor}" />
-                                <GradientStop Offset="0.5" Color="{DynamicResource AccentPurpleColor}" />
-                                <GradientStop Offset="1" Color="{DynamicResource AccentRedColor}" />
+                                <GradientStop Offset="0" Color="{DynamicResource TitleBarBlueColor}" />
+                                <GradientStop Offset="0.5" Color="{DynamicResource TitleBarPurpleColor}" />
+                                <GradientStop Offset="1" Color="{DynamicResource TitleBarRedColor}" />
                               </LinearGradientBrush>
                             </Border.Background>
                           </Border>
@@ -292,9 +304,32 @@
       <Setter Property="Foreground" Value="#FAFAFA" />
     </Style>
 
-    <!-- Material list + texture picker: blue selection highlight. -->
+    <!-- Material list + texture picker: selection highlight uses the empire secondary accent. -->
     <Style Selector="ListBox.accentBlue ListBoxItem:selected:not(:pointerover) /template/ Border#SelectionBackground">
-      <Setter Property="Background" Value="{DynamicResource AccentBlueBrush}" />
+      <Setter Property="Background" Value="{DynamicResource AccentSecondaryBrush}" />
+    </Style>
+
+    <!-- Asset/file browser (TreeView, SimpleTheme): selection highlight uses the empire secondary accent
+         across the selected / focused / hovered states (SimpleTheme's part is Border#SelectionBorder). -->
+    <Style Selector="TreeViewItem:selected /template/ Border#SelectionBorder">
+      <Setter Property="Background" Value="{DynamicResource AccentSecondaryBrush}" />
+    </Style>
+    <Style Selector="TreeViewItem:selected /template/ Border#SelectionBorder:focus">
+      <Setter Property="Background" Value="{DynamicResource AccentSecondaryBrush}" />
+    </Style>
+    <Style Selector="TreeViewItem:selected /template/ Border#SelectionBorder:pointerover">
+      <Setter Property="Background" Value="{DynamicResource AccentSecondaryBrush}" />
+    </Style>
+    <Style Selector="TreeViewItem:selected /template/ Border#SelectionBorder:pointerover:focus">
+      <Setter Property="Background" Value="{DynamicResource AccentSecondaryBrush}" />
+    </Style>
+
+    <!-- Accent-coloured section headers get a soft shadow so they stay legible against the panel:
+         light in dark mode, dark in light mode (AccentTextShadowColor is theme-swapped). -->
+    <Style Selector="TextBlock.sectionHeader">
+      <Setter Property="Effect">
+        <DropShadowEffect BlurRadius="3" OffsetX="0" OffsetY="1" Color="{DynamicResource AccentTextShadowColor}" />
+      </Setter>
     </Style>
   </shadui:Window.Styles>
 
@@ -485,13 +520,26 @@
   </shadui:Window.DataTemplates>
 
   <DockPanel>
+    <!-- Status bar (VS Code-style; purple accent, shows background-load status). First Bottom-docked
+         child so it sits flush at the very bottom edge, with the console just above it. -->
+    <Border DockPanel.Dock="Bottom" Height="24"
+            Background="{DynamicResource AccentPrimaryBrush}">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="10" Margin="12,0">
+        <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}"
+                     Width="120" Height="6" MinHeight="6"
+                     Foreground="{DynamicResource AccentSecondaryBrush}" Background="#40FFFFFF" />
+        <TextBlock Text="{Binding StatusMessage}" Foreground="#FAFAFA"
+                   FontSize="12" FontWeight="Medium" VerticalAlignment="Center" />
+      </StackPanel>
+    </Border>
+
     <!-- Console -->
     <Border DockPanel.Dock="Bottom" Height="140"
             Background="{DynamicResource PanelBackgroundBrush}"
             BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0">
       <DockPanel>
         <TextBlock DockPanel.Dock="Top" Text="CONSOLE"
-                   Foreground="{DynamicResource AccentBlueBrush}" FontSize="11"
+                   Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" FontSize="11"
                    Margin="10,5" FontWeight="SemiBold" />
         <ScrollViewer Margin="10,0,10,6">
           <ItemsControl ItemsSource="{Binding ConsoleLines}">
@@ -513,7 +561,7 @@
               BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,0,1,0">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="ASSETS"
-                     Foreground="{DynamicResource AccentBlueBrush}" FontSize="11"
+                     Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" FontSize="11"
                      Margin="10,7" FontWeight="SemiBold" />
           <TextBox DockPanel.Dock="Top" Margin="8,0,8,6" PlaceholderText="filter…"
                    Text="{Binding BrowserFilter, Mode=TwoWay}" FontSize="12" />
@@ -649,7 +697,7 @@
               BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1,0,0,0">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="INSPECTOR"
-                     Foreground="{DynamicResource AccentBlueBrush}" FontSize="11"
+                     Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" FontSize="11"
                      Margin="10,7" FontWeight="SemiBold" />
           <DockPanel Margin="10,0,10,8" DataContext="{Binding SelectedDocument}">
             <StackPanel DockPanel.Dock="Top">
@@ -665,7 +713,7 @@
               <StackPanel Spacing="2">
                 <!-- Mesh part picker (only present for 3D documents). -->
                 <TextBlock Text="MESHES — select to isolate"
-                           Foreground="{DynamicResource AccentBlueBrush}" FontSize="11"
+                           Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" FontSize="11"
                            FontWeight="SemiBold" Margin="0,2,0,4"
                            IsVisible="{Binding Parts, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
                 <ListBox ItemsSource="{Binding Parts}"
@@ -689,7 +737,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="5"
                             IsVisible="{Binding HasMaterials, FallbackValue=False}">
                   <TextBlock Text="TEXTURES" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource AccentBlueBrush}" />
+                             Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" />
 
                   <!-- Whole-model empire swap — the headline action. -->
                   <StackPanel Orientation="Horizontal" Spacing="6"
@@ -746,7 +794,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="6"
                             IsVisible="{Binding CanAnimate, FallbackValue=False}">
                   <TextBlock Text="ANIMATION" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource AccentBlueBrush}" />
+                             Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" />
                   <Button Content="Load anims.ubr…" Click="OnLoadAnimations" HorizontalAlignment="Stretch" />
                   <ComboBox ItemsSource="{Binding AnimClips}" SelectedItem="{Binding ActiveClip, Mode=TwoWay}"
                             PlaceholderText="select a clip" HorizontalAlignment="Stretch">
@@ -766,7 +814,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="6"
                             IsVisible="{Binding HasSkeleton, FallbackValue=False}">
                   <TextBlock Text="SKELETON" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource AccentBlueBrush}" />
+                             Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" />
                   <ToggleButton Content="Show Bones" IsChecked="{Binding ShowSkeleton, Mode=TwoWay}"
                                 HorizontalAlignment="Stretch" />
                 </StackPanel>

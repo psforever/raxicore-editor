@@ -9,6 +9,7 @@ using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using RaxicoreEditor.Editor.Documents;
+using RaxicoreEditor.Editor.Theming;
 using RaxicoreEditor.Editor.ViewModels;
 using RaxicoreEditor.EngineAssets.Meshes;
 
@@ -23,6 +24,12 @@ namespace RaxicoreEditor.Editor.Views
         {
             InitializeComponent();
             DataContext = _vm;
+
+            // Reflect the persisted status-bar theme (applied at startup in App.Initialize) in the menu.
+            if (Application.Current is App app)
+            {
+                SyncStatusThemeChecks(app.Themes.StatusBar);
+            }
         }
 
         private async void OnOpenFolder(object? sender, RoutedEventArgs e)
@@ -36,7 +43,7 @@ namespace RaxicoreEditor.Editor.Views
                     string? path = folders[0].TryGetLocalPath();
                     if (!string.IsNullOrEmpty(path))
                     {
-                        _vm.MountFolder(path);
+                        await _vm.MountFolderAsync(path);
                     }
                 }
             }
@@ -57,7 +64,7 @@ namespace RaxicoreEditor.Editor.Views
                     string? path = files[0].TryGetLocalPath();
                     if (!string.IsNullOrEmpty(path))
                     {
-                        _vm.OpenPath(path);
+                        await _vm.OpenPathAsync(path);
                     }
                 }
             }
@@ -125,6 +132,30 @@ namespace RaxicoreEditor.Editor.Views
             ThemeSystemItem.IsChecked = variant == ThemeVariant.Default;
             ThemeLightItem.IsChecked = variant == ThemeVariant.Light;
             ThemeDarkItem.IsChecked = variant == ThemeVariant.Dark;
+        }
+
+        private void OnStatusTradition(object? sender, RoutedEventArgs e) => SetStatusTheme(StatusBarTheme.Tradition);
+        private void OnStatusLiberty(object? sender, RoutedEventArgs e) => SetStatusTheme(StatusBarTheme.Liberty);
+        private void OnStatusTechnology(object? sender, RoutedEventArgs e) => SetStatusTheme(StatusBarTheme.Technology);
+        private void OnStatusDisruption(object? sender, RoutedEventArgs e) => SetStatusTheme(StatusBarTheme.Disruption);
+
+        private void SetStatusTheme(StatusBarTheme theme)
+        {
+            if (Application.Current is App app)
+            {
+                app.Themes.SetStatusBarTheme(theme);
+                app.Settings.StatusBarTheme = theme.ToString();
+                app.Settings.Save();
+            }
+            SyncStatusThemeChecks(theme);
+        }
+
+        private void SyncStatusThemeChecks(StatusBarTheme theme)
+        {
+            StatusTraditionItem.IsChecked = theme == StatusBarTheme.Tradition;
+            StatusLibertyItem.IsChecked = theme == StatusBarTheme.Liberty;
+            StatusTechnologyItem.IsChecked = theme == StatusBarTheme.Technology;
+            StatusDisruptionItem.IsChecked = theme == StatusBarTheme.Disruption;
         }
 
         private async void OnExportObj(object? sender, RoutedEventArgs e)
@@ -240,11 +271,11 @@ namespace RaxicoreEditor.Editor.Views
             }
         }
 
-        private void OnBrowserDoubleTapped(object? sender, TappedEventArgs e)
+        private async void OnBrowserDoubleTapped(object? sender, TappedEventArgs e)
         {
             if (_vm.SelectedNode is BrowserNode node)
             {
-                _vm.OpenNode(node);
+                await _vm.OpenNodeAsync(node);
             }
         }
     }

@@ -6,6 +6,15 @@ using ShadTheme = ShadUI.ShadTheme;
 
 namespace RaxicoreEditor.Editor.Theming
 {
+    /// <summary>Named colour scheme for the status bar (background + loading-bar accent).</summary>
+    public enum StatusBarTheme
+    {
+        Tradition,   // red / grey
+        Liberty,     // blue / gold
+        Technology,  // violet / teal
+        Disruption,  // army-green / cyan-teal
+    }
+
     /// <summary>
     /// Owns the active application theme (ShadUI / shadcn) and the chrome brush palette. The light/dark
     /// variant follows the OS by default and can be overridden via <see cref="SetVariant"/>.
@@ -42,6 +51,28 @@ namespace RaxicoreEditor.Editor.Theming
             ApplyChrome();
         }
 
+        /// <summary>The status-bar colour theme currently applied.</summary>
+        public StatusBarTheme StatusBar { get; private set; } = StatusBarTheme.Technology;
+
+        /// <summary>
+        /// Apply a named status-bar theme (background + loading-bar accent). Independent of the light/dark
+        /// variant, so the status bar keeps its saturated empire colours in both.
+        /// </summary>
+        public void SetStatusBarTheme(StatusBarTheme theme)
+        {
+            StatusBar = theme;
+            (uint background, uint loading) = theme switch
+            {
+                StatusBarTheme.Tradition  => (0xFF741D15u, 0xFF2C2C2Cu), // red / grey
+                StatusBarTheme.Liberty    => (0xFF1D4E9Au, 0xFFEEC53Au), // blue / gold
+                StatusBarTheme.Technology => (0xFF532177u, 0xFF385E6Au), // violet / teal
+                StatusBarTheme.Disruption => (0xFF27312Fu, 0xFF3F6270u), // army-green / cyan-teal
+                _                         => (0xFF532177u, 0xFF385E6Au),
+            };
+            Set("AccentPrimaryBrush", background);     // status-bar background + section headers
+            Set("AccentSecondaryBrush", loading);      // loading bar + asset/file selection highlight
+        }
+
         private void ApplyChrome()
         {
             // shadcn-style zinc neutrals so our custom panels match the ShadUI controls.
@@ -63,6 +94,12 @@ namespace RaxicoreEditor.Editor.Theming
                 SetColor("AccentRedColor", 0xFFB91C1C);
                 SetColor("AccentBlueColor", 0xFF1D4ED8);
                 SetColor("AccentPurpleColor", 0xFF6D28D9);
+                // Title bar: very dark, subtle deep tints (blue/violet/red-950) over the dark chrome.
+                SetColor("TitleBarBlueColor", 0xFF172554);
+                SetColor("TitleBarPurpleColor", 0xFF2E1065);
+                SetColor("TitleBarRedColor", 0xFF450A0A);
+                // Light shadow behind accent-coloured text in dark mode.
+                SetColor("AccentTextShadowColor", 0x99FFFFFF);
             }
             else
             {
@@ -81,6 +118,12 @@ namespace RaxicoreEditor.Editor.Theming
                 SetColor("AccentRedColor", 0xFFF87171);
                 SetColor("AccentBlueColor", 0xFF60A5FA);
                 SetColor("AccentPurpleColor", 0xFFA78BFA);
+                // Title bar: very light, subtle pastels (blue/violet/red-100) over the light chrome.
+                SetColor("TitleBarBlueColor", 0xFFDBEAFE);
+                SetColor("TitleBarPurpleColor", 0xFFEDE9FE);
+                SetColor("TitleBarRedColor", 0xFFFEE2E2);
+                // Dark shadow behind accent-coloured text in light mode.
+                SetColor("AccentTextShadowColor", 0x99000000);
             }
         }
 

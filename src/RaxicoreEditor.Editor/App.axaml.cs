@@ -1,3 +1,4 @@
+using System;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
@@ -10,11 +11,18 @@ namespace RaxicoreEditor.Editor
     {
         public ThemeManager Themes { get; private set; } = null!;
 
+        /// <summary>Persisted user preferences (status-bar theme, …). Saved on change.</summary>
+        public EditorSettings Settings { get; private set; } = null!;
+
         public override void Initialize()
         {
             AvaloniaXamlLoader.Load(this);
             Themes = new ThemeManager(this);
             Themes.Initialize(); // ShadUI (shadcn) theme at Styles[0]; ShadTheme also styles DataGrid.
+
+            Settings = EditorSettings.Load();
+            Themes.SetStatusBarTheme(
+                Enum.TryParse(Settings.StatusBarTheme, out StatusBarTheme saved) ? saved : StatusBarTheme.Technology);
         }
 
         public override void OnFrameworkInitializationCompleted()

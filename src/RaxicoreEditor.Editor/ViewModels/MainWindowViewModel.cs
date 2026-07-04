@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using RaxicoreEditor.EngineAssets.Archives;
 using RaxicoreEditor.EngineAssets.Databases;
 using RaxicoreEditor.EngineAssets.Meshes;
@@ -26,6 +27,44 @@ namespace RaxicoreEditor.Editor.ViewModels
             ShowGameAssetsCommand = new RelayCommand(() => GameAssetsView = true);
             ShowFilesCommand = new RelayCommand(() => GameAssetsView = false);
             Log("Raxicore Editor ready. Open a folder or archive to begin.");
+        }
+
+        // ---- load status (drives the purple status bar) ----------------------------------------
+
+        private string _statusMessage = "Ready";
+        /// <summary>Text shown in the status bar — idle "Ready" or the current background-load phase.</summary>
+        public string StatusMessage
+        {
+            get => _statusMessage;
+            private set => SetProperty(ref _statusMessage, value);
+        }
+
+        private bool _isBusy;
+        /// <summary>True while a background load runs; shows the status bar's indeterminate progress.</summary>
+        public bool IsBusy
+        {
+            get => _isBusy;
+            private set => SetProperty(ref _isBusy, value);
+        }
+
+        // A depth counter keeps IsBusy correct if loads overlap (e.g. expanding while another loads).
+        private int _busyDepth;
+
+        private void BeginBusy(string message)
+        {
+            _busyDepth++;
+            IsBusy = true;
+            StatusMessage = message;
+        }
+
+        private void EndBusy(string doneMessage)
+        {
+            if (--_busyDepth <= 0)
+            {
+                _busyDepth = 0;
+                IsBusy = false;
+            }
+            StatusMessage = doneMessage;
         }
 
         /// <summary>Game-utilization view: assets grouped by role (default left-pane view).</summary>
@@ -111,20 +150,34 @@ namespace RaxicoreEditor.Editor.ViewModels
 
         // ---- folder mounting -------------------------------------------------------------------
 
-        public void MountFolder(string path)
+        public async Task MountFolderAsync(string path)
         {
+            string label = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar));
+            BeginBusy($"Scanning {label}…");
+            // Progress captures the UI SynchronizationContext, so reports marshal back automatically.
+            IProgress<string> report = new Progress<string>(m => StatusMessage = m);
             try
             {
-                var root = new BrowserNode(Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar)),
-                                           path, BrowserNodeKind.Folder) { IsExpanded = true };
-                int count = PopulateFolder(root, path, 0);
+                // Enumerate the tree and categorise every file off the UI thread — the nodes are built
+                // in memory and only published to the bound collections once the scan is finished.
+                (BrowserNode root, int count, List<BrowserNode> cats) = await Task.Run(() =>
+                {
+                    var r = new BrowserNode(label, path, BrowserNodeKind.Folder) { IsExpanded = true };
+                    int c = PopulateFolder(r, path, 0);
+                    report.Report($"Cataloguing {label}…");
+                    List<BrowserNode> cs = BuildCatalogNodes(path);
+                    return (r, c, cs);
+                });
+
                 Roots.Add(root);
                 Log($"Mounted '{path}' ({count} files).");
-                BuildCatalog(path);
+                PublishCatalog(cats);
+                EndBusy($"Mounted {label} — {count} files");
             }
             catch (Exception ex)
             {
                 Log($"mount failed: {ex.Message}");
+                EndBusy("Load failed");
             }
         }
 
@@ -178,7 +231,7 @@ namespace RaxicoreEditor.Editor.ViewModels
         /// it plays in the game (continents, models, textures, ASCII databases, …) rather than by folder.
         /// Archive contents (textures, PACK databases) load lazily on expand so the scan stays instant.
         /// </summary>
-        public void BuildCatalog(string root)
+        private List<BrowserNode> BuildCatalogNodes(string root)
         {
             var continents = new BrowserNode("Continents", root + "#continents", BrowserNodeKind.Category);
             var models = new BrowserNode("Models", root + "#models", BrowserNodeKind.Category);
@@ -255,18 +308,27 @@ namespace RaxicoreEditor.Editor.ViewModels
                 }
             }
 
-            CatalogRoots.Clear();
             BrowserNode[] cats = { continents, models, anims, textures, surfaces, databases, audio, scripts, archives, other };
-            int shown = 0;
+            var shown = new List<BrowserNode>();
             foreach (BrowserNode cat in cats)
             {
                 if (cat.Children.Count == 0) continue;
                 cat.Name = $"{cat.Name}  ({cat.Children.Count})";
                 cat.IsExpanded = false;
-                CatalogRoots.Add(cat);
-                shown++;
+                shown.Add(cat);
             }
-            Log($"Game-asset catalog: {shown} categories built. (Default view; switch to Files at the bottom of the pane.)");
+            return shown;
+        }
+
+        /// <summary>Publish the freshly built catalog to the bound tree (call on the UI thread).</summary>
+        private void PublishCatalog(List<BrowserNode> cats)
+        {
+            CatalogRoots.Clear();
+            foreach (BrowserNode cat in cats)
+            {
+                CatalogRoots.Add(cat);
+            }
+            Log($"Game-asset catalog: {cats.Count} categories built. (Default view; switch to Files at the bottom of the pane.)");
         }
 
         private void CollectFiles(string dir, List<string> outFiles, int depth)
@@ -322,13 +384,18 @@ namespace RaxicoreEditor.Editor.ViewModels
             return norm.Contains("/pack/", StringComparison.OrdinalIgnoreCase);
         }
 
-        private void LoadFlatEntries(BrowserNode node, string fatPath)
+        // The lazy loaders run from BrowserNode.IsExpanded on the UI thread; they fire off the async
+        // worker so expanding an archive in the tree never blocks the UI while it parses/decompresses.
+        private void LoadFlatEntries(BrowserNode node, string fatPath) => _ = LoadFlatEntriesAsync(node, fatPath);
+
+        private async Task LoadFlatEntriesAsync(BrowserNode node, string fatPath)
         {
+            BeginBusy($"Reading {Path.GetFileName(fatPath)}…");
             try
             {
                 if (!_flats.TryGetValue(fatPath, out FlatArchive? flat))
                 {
-                    flat = FlatArchive.Load(File.ReadAllBytes(fatPath));
+                    flat = await Task.Run(() => FlatArchive.Load(File.ReadAllBytes(fatPath)));
                     _flats[fatPath] = flat;
                 }
                 foreach (FlatEntry e in flat.Entries)
@@ -340,28 +407,46 @@ namespace RaxicoreEditor.Editor.ViewModels
             {
                 Log($"index '{Path.GetFileName(fatPath)}' failed: {ex.Message}");
             }
+            finally
+            {
+                EndBusy("Ready");
+            }
         }
 
         private void LoadPakEntries(BrowserNode node, string pakPath, bool databasesOnly)
+            => _ = LoadPakEntriesAsync(node, pakPath, databasesOnly);
+
+        private async Task LoadPakEntriesAsync(BrowserNode node, string pakPath, bool databasesOnly)
         {
+            BeginBusy($"Reading {Path.GetFileName(pakPath)}…");
             try
             {
                 if (!_archives.TryGetValue(pakPath, out PakArchive? pak))
                 {
-                    pak = PakArchive.Load(File.ReadAllBytes(pakPath));
+                    pak = await Task.Run(() => PakArchive.Load(File.ReadAllBytes(pakPath)));
                     _archives[pakPath] = pak;
                 }
-                int added = 0;
-                foreach (PakEntry e in pak.Entries)
+
+                // Classifying "ASCII database" entries can extract/decompress each one — do it off-thread.
+                List<string> names = await Task.Run(() =>
                 {
-                    if (databasesOnly && !IsDatabaseEntry(pak, e))
+                    var list = new List<string>();
+                    foreach (PakEntry e in pak.Entries)
                     {
-                        continue;
+                        if (databasesOnly && !IsDatabaseEntry(pak, e))
+                        {
+                            continue;
+                        }
+                        list.Add(e.Name);
                     }
-                    node.Children.Add(new BrowserNode(e.Name, pakPath + "!" + e.Name, BrowserNodeKind.ArchiveEntry));
-                    added++;
+                    return list;
+                });
+
+                foreach (string entryName in names)
+                {
+                    node.Children.Add(new BrowserNode(entryName, pakPath + "!" + entryName, BrowserNodeKind.ArchiveEntry));
                 }
-                if (databasesOnly && added == 0)
+                if (databasesOnly && names.Count == 0)
                 {
                     node.Children.Add(new BrowserNode("(no ASCII databases found)", pakPath + "#none", BrowserNodeKind.File));
                 }
@@ -369,6 +454,10 @@ namespace RaxicoreEditor.Editor.ViewModels
             catch (Exception ex)
             {
                 Log($"open '{Path.GetFileName(pakPath)}' failed: {ex.Message}");
+            }
+            finally
+            {
+                EndBusy("Ready");
             }
         }
 
@@ -405,85 +494,95 @@ namespace RaxicoreEditor.Editor.ViewModels
 
         // ---- opening documents -----------------------------------------------------------------
 
-        public void OpenNode(BrowserNode node)
+        public async Task OpenNodeAsync(BrowserNode node)
         {
             switch (node.Kind)
             {
                 case BrowserNodeKind.File:
-                    OpenPath(node.FullPath);
+                    await OpenPathAsync(node.FullPath);
                     break;
                 case BrowserNodeKind.ArchiveEntry:
-                    OpenArchiveEntry(node);
+                    await OpenArchiveEntryAsync(node);
                     break;
             }
         }
 
         /// <summary>Open a folder (mount), a PACK archive (browse), or a plain file (document).</summary>
-        public void OpenPath(string path)
+        public async Task OpenPathAsync(string path)
         {
             if (Directory.Exists(path))
             {
-                MountFolder(path);
+                await MountFolderAsync(path);
                 return;
             }
 
-            byte[] bytes;
+            string name = Path.GetFileName(path);
+            BeginBusy($"Reading {name}…");
             try
             {
-                bytes = File.ReadAllBytes(path);
-            }
-            catch (Exception ex)
-            {
-                Log($"open '{path}' failed: {ex.Message}");
-                return;
-            }
-
-            if (PakArchive.HasMagic(bytes))
-            {
-                LoadPak(path, bytes);
-                return;
-            }
-            if (FlatArchive.HasMagic(bytes))
-            {
-                LoadFlat(path, bytes);
-                return;
-            }
-            // .fdx is the FLAT index companion: open it as access to its .fat archive.
-            if (path.EndsWith(".fdx", StringComparison.OrdinalIgnoreCase))
-            {
-                OpenFdx(path);
-                return;
-            }
-
-            OpenDocumentFromBytes(Path.GetFileName(path), path, bytes);
-        }
-
-        /// <summary>Open a .fdx index by browsing its sibling .fat archive (the data store).</summary>
-        private void OpenFdx(string fdxPath)
-        {
-            string fatPath = Path.ChangeExtension(fdxPath, ".fat");
-            if (File.Exists(fatPath))
-            {
+                byte[] bytes;
                 try
                 {
-                    LoadFlat(fatPath, File.ReadAllBytes(fatPath));
-                    Log($"Opened '{Path.GetFileName(fdxPath)}' (.fdx index) → browsing {Path.GetFileName(fatPath)}.");
+                    bytes = await Task.Run(() => File.ReadAllBytes(path));
                 }
                 catch (Exception ex)
                 {
-                    Log($"open .fdx '{fdxPath}' failed: {ex.Message}");
+                    Log($"open '{path}' failed: {ex.Message}");
+                    return;
                 }
-                return;
+
+                if (PakArchive.HasMagic(bytes))
+                {
+                    await LoadPakAsync(path, bytes);
+                    return;
+                }
+                if (FlatArchive.HasMagic(bytes))
+                {
+                    await LoadFlatAsync(path, bytes);
+                    return;
+                }
+                // .fdx is the FLAT index companion: open it as access to its .fat archive.
+                if (path.EndsWith(".fdx", StringComparison.OrdinalIgnoreCase))
+                {
+                    await OpenFdxAsync(path);
+                    return;
+                }
+
+                await OpenDocumentFromBytesAsync(name, path, bytes);
             }
-            Log($".fdx '{Path.GetFileName(fdxPath)}' has no sibling .fat data file beside it.");
+            finally
+            {
+                EndBusy("Ready");
+            }
         }
 
-        private void LoadFlat(string path, byte[] bytes)
+        /// <summary>Open a .fdx index by browsing its sibling .fat archive (the data store).</summary>
+        private async Task OpenFdxAsync(string fdxPath)
+        {
+            string fatPath = Path.ChangeExtension(fdxPath, ".fat");
+            if (!File.Exists(fatPath))
+            {
+                Log($".fdx '{Path.GetFileName(fdxPath)}' has no sibling .fat data file beside it.");
+                return;
+            }
+            try
+            {
+                byte[] bytes = await Task.Run(() => File.ReadAllBytes(fatPath));
+                await LoadFlatAsync(fatPath, bytes);
+                Log($"Opened '{Path.GetFileName(fdxPath)}' (.fdx index) → browsing {Path.GetFileName(fatPath)}.");
+            }
+            catch (Exception ex)
+            {
+                Log($"open .fdx '{fdxPath}' failed: {ex.Message}");
+            }
+        }
+
+        private async Task LoadFlatAsync(string path, byte[] bytes)
         {
             FlatArchive flat;
             try
             {
-                flat = FlatArchive.Load(bytes);
+                flat = await Task.Run(() => FlatArchive.Load(bytes));
             }
             catch (Exception ex)
             {
@@ -504,12 +603,12 @@ namespace RaxicoreEditor.Editor.ViewModels
             Log($"Opened archive {Path.GetFileName(path)} (FLAT, {flat.Entries.Count} entries).");
         }
 
-        private void LoadPak(string path, byte[] bytes)
+        private async Task LoadPakAsync(string path, byte[] bytes)
         {
             PakArchive pak;
             try
             {
-                pak = PakArchive.Load(bytes);
+                pak = await Task.Run(() => PakArchive.Load(bytes));
             }
             catch (Exception ex)
             {
@@ -530,7 +629,7 @@ namespace RaxicoreEditor.Editor.ViewModels
             Log($"Opened archive {Path.GetFileName(path)} (PACK v{pak.Version}, {pak.Entries.Count} entries).");
         }
 
-        private void OpenArchiveEntry(BrowserNode node)
+        private async Task OpenArchiveEntryAsync(BrowserNode node)
         {
             int bang = node.FullPath.IndexOf('!');
             if (bang < 0)
@@ -540,32 +639,40 @@ namespace RaxicoreEditor.Editor.ViewModels
             string archivePath = node.FullPath.Substring(0, bang);
             string entryName = node.FullPath.Substring(bang + 1);
 
-            byte[] bytes;
+            BeginBusy($"Extracting {entryName}…");
             try
             {
-                if (_archives.TryGetValue(archivePath, out PakArchive? pak))
+                byte[] bytes;
+                try
                 {
-                    bytes = pak.Extract(entryName);
+                    if (_archives.TryGetValue(archivePath, out PakArchive? pak))
+                    {
+                        bytes = await Task.Run(() => pak.Extract(entryName));
+                    }
+                    else if (_flats.TryGetValue(archivePath, out FlatArchive? flat))
+                    {
+                        bytes = await Task.Run(() => flat.Extract(entryName));
+                    }
+                    else
+                    {
+                        Log("archive not loaded: " + archivePath);
+                        return;
+                    }
                 }
-                else if (_flats.TryGetValue(archivePath, out FlatArchive? flat))
+                catch (Exception ex)
                 {
-                    bytes = flat.Extract(entryName);
-                }
-                else
-                {
-                    Log("archive not loaded: " + archivePath);
+                    Log($"extract '{entryName}' failed: {ex.Message}");
                     return;
                 }
+                await OpenDocumentFromBytesAsync(entryName, node.FullPath, bytes);
             }
-            catch (Exception ex)
+            finally
             {
-                Log($"extract '{entryName}' failed: {ex.Message}");
-                return;
+                EndBusy("Ready");
             }
-            OpenDocumentFromBytes(entryName, node.FullPath, bytes);
         }
 
-        private void OpenDocumentFromBytes(string name, string source, byte[] bytes)
+        private async Task OpenDocumentFromBytesAsync(string name, string source, byte[] bytes)
         {
             // Focus an already-open document for the same source.
             foreach (DocumentBase existing in OpenDocuments)
@@ -577,7 +684,28 @@ namespace RaxicoreEditor.Editor.ViewModels
                 }
             }
 
-            DocumentBase doc = CreateDocument(name, source, bytes);
+            DocumentBase doc;
+            if (UberMesh.IsUberMesh(bytes))
+            {
+                // Mesh/continent assembly (geometry + sibling texture archives) is the heavy path — build
+                // the document off the UI thread, then add it once it's ready. It holds only plain data,
+                // no Avalonia bitmaps, so constructing it off-thread is safe.
+                StatusMessage = $"Assembling {name}…";
+                try
+                {
+                    doc = await Task.Run(() => CreateDocument(name, source, bytes));
+                }
+                catch (Exception ex)
+                {
+                    Log($"open '{name}' failed: {ex.Message}");
+                    return;
+                }
+            }
+            else
+            {
+                doc = CreateDocument(name, source, bytes);
+            }
+
             AddDocument(doc);
             Log($"Opened {name} ({bytes.Length} bytes, {doc.Kind}).");
         }
