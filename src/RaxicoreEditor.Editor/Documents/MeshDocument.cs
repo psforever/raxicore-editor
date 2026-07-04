@@ -955,11 +955,14 @@ namespace RaxicoreEditor.Editor.Documents
         // texture dedup collapses the ~800 water tiles to a single GPU texture.
         private readonly record struct AliasTex(byte[] Bgra, int Width, int Height, bool Translucent);
 
+        // Continent water surfaces come under a few base material names (each usually suffixed "+null"):
+        // "water" (the open sea), "tide" (the shoreline band). None resolve to a direct texture, so map
+        // them to the engine's water texture at ~0.90 opacity — deep water reads solid dark-teal from
+        // above; the slight translucency only hints at the bottom in the shallows near shore.
         private static readonly (string Material, string Texture, byte Alpha)[] MaterialAliases =
         {
-            // ~0.90 opacity: deep water reads as solid dark-teal from above; the slight translucency only
-            // hints at the bottom in the shallows near shore.
             ("water", "old_water", 230),
+            ("tide", "old_water", 230),
         };
 
         // "ocean_floor" is the engine's abyssal fill plane far below the water, not a visible seabed —
@@ -977,10 +980,15 @@ namespace RaxicoreEditor.Editor.Documents
             {
                 if (AliasCache.TryGetValue(material, out AliasTex? cached)) return cached;
             }
+            // Match the base material name, ignoring a "+<lightmap>" / "+null" suffix (water surfaces
+            // ship as "water+null", "tide+null").
+            int plus = material.IndexOf('+');
+            string baseMat = plus > 0 ? material.Substring(0, plus) : material;
             AliasTex? result = null;
             foreach (var (mat, tex, alpha) in MaterialAliases)
             {
-                if (!material.Equals(mat, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!material.Equals(mat, StringComparison.OrdinalIgnoreCase) &&
+                    !baseMat.Equals(mat, StringComparison.OrdinalIgnoreCase)) continue;
                 DdsImage? img = textures.Get(tex);
                 if (img != null)
                 {
@@ -1040,7 +1048,10 @@ namespace RaxicoreEditor.Editor.Documents
                 byte[]? texBgra = dds?.Bgra;
                 int texW = dds?.Width ?? 0, texH = dds?.Height ?? 0;
                 string? texName = dds != null ? key : null;
-                bool translucent = MeshSubmesh.IsMaskTextureName(texName);
+                // Translucency: authoritative from materials.adb (mat_pipeline alpha_sort/effect),
+                // plus the "mask" overlay heuristic for shield/beam materials.
+                bool translucent = MeshSubmesh.IsMaskTextureName(texName)
+                                   || (textures.Materials?.IsTranslucent(Material) ?? false);
 
                 // Fall back to the "water" material alias when there's no direct texture, so continent
                 // water renders as translucent water instead of a white plane.
@@ -1052,7 +1063,6 @@ namespace RaxicoreEditor.Editor.Documents
                     texName = Material;
                     translucent = alias.Translucent;
                 }
-
                 return new MeshSubmesh
                 {
                     Material = Material,
