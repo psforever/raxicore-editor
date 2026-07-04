@@ -180,19 +180,32 @@ namespace RaxicoreEditor.EngineAssets.Textures
             return false;
         }
 
-        // Candidate texture keys, in priority order: the full material, then the suffix after the last
-        // '+' (map blend materials), then the prefix before it, then — as a last resort — the material
-        // with a "mask_" token inserted at each '_' boundary. Some translucent effect overlays (shield
-        // domes, energy beams) store their texture under a name the section material omits a token from,
-        // e.g. material "force_dome_amp_inner" → texture "force_dome_mask_amp_inner".
+        // Candidate texture keys, in priority order.
+        //
+        // A section's material name is <base>+<suffix>. The engine looks the whole name up in
+        // materials.adb and uses its mat_texture1 (the BASE surface texture). Two shipped naming forms
+        // determine which half is the base:
+        //   • object materials:  "<baseTexture>+<lightmap>"  — the lightmap suffix starts with '_'
+        //                         (e.g. "rails01+_tower_b_shell_ne" → base "rails01"); the BASE is the prefix.
+        //   • terrain blends:    "<mapCell>+<mapBlend>"       — (e.g. "map01+map010000" → "map010000");
+        //                         the BASE is the suffix.
+        // So try the base half first per that rule, then the other half. (Trying the lightmap suffix first
+        // — as this used to — applied ~1000 tower/facility surfaces as their shadow lightmap, not their
+        // actual texture.) Finally, a last-resort "mask_" insertion for translucent overlays whose texture
+        // omits a token from the material name (shield domes: "force_dome_amp_inner" → "force_dome_mask_amp_inner").
         private static IEnumerable<string> Candidates(string material)
         {
             yield return material;
             int plus = material.LastIndexOf('+');
             if (plus >= 0)
             {
-                if (plus + 1 < material.Length) yield return material.Substring(plus + 1);
-                if (plus > 0) yield return material.Substring(0, plus);
+                string prefix = plus > 0 ? material.Substring(0, plus) : "";
+                string suffix = plus + 1 < material.Length ? material.Substring(plus + 1) : "";
+                bool suffixIsLightmap = suffix.StartsWith("_", StringComparison.Ordinal);
+                string first = suffixIsLightmap ? prefix : suffix;   // the base texture half
+                string second = suffixIsLightmap ? suffix : prefix;
+                if (first.Length > 0) yield return first;
+                if (second.Length > 0) yield return second;
             }
             for (int i = 0; i < material.Length; i++)
             {
