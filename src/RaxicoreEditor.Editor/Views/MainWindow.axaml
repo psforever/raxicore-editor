@@ -100,7 +100,17 @@
                       <Border ClipToBounds="True"
                               CornerRadius="{TemplateBinding RootCornerRadius, Converter={x:Static shadui:CornerRadiusConverters.TopOnly}}">
                         <Panel Margin="0,-1,0,0">
-                          <Border Name="PART_TitleBarBackground" />
+                          <!-- Title-bar accent sweep: blue → purple → red, left to right. The inline
+                               Background overrides ShadUI's PART_TitleBarBackground style setter. -->
+                          <Border Name="PART_TitleBarBackground">
+                            <Border.Background>
+                              <LinearGradientBrush StartPoint="0%,50%" EndPoint="100%,50%">
+                                <GradientStop Offset="0" Color="{DynamicResource AccentBlueColor}" />
+                                <GradientStop Offset="0.5" Color="{DynamicResource AccentPurpleColor}" />
+                                <GradientStop Offset="1" Color="{DynamicResource AccentRedColor}" />
+                              </LinearGradientBrush>
+                            </Border.Background>
+                          </Border>
                           <Grid ColumnDefinitions="Auto,*,Auto">
                             <!-- Left: logo, then menu — sharing this row with the title instead of a
                                  separate row underneath. -->
@@ -265,6 +275,28 @@
       </Style>
     </ControlTheme>
   </shadui:Window.Resources>
+
+  <shadui:Window.Styles>
+    <!-- Active tab indicator: a purple underline under the selected tab (ShadUI's TabItem otherwise
+         signals selection only with opacity). -->
+    <Style Selector="TabItem:selected /template/ ContentPresenter#ContentPresenter">
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentPurpleBrush}" />
+      <Setter Property="BorderThickness" Value="0,0,0,2" />
+    </Style>
+
+    <!-- Toggle buttons light up red when on. -->
+    <Style Selector="ToggleButton:checked /template/ Border#NameBaseBackground">
+      <Setter Property="Background" Value="{DynamicResource AccentRedBrush}" />
+    </Style>
+    <Style Selector="ToggleButton:checked">
+      <Setter Property="Foreground" Value="#FAFAFA" />
+    </Style>
+
+    <!-- Material list + texture picker: blue selection highlight. -->
+    <Style Selector="ListBox.accentBlue ListBoxItem:selected:not(:pointerover) /template/ Border#SelectionBackground">
+      <Setter Property="Background" Value="{DynamicResource AccentBlueBrush}" />
+    </Style>
+  </shadui:Window.Styles>
 
   <shadui:Window.DataTemplates>
     <!-- Per-document content views, selected by type for the active tab. -->
@@ -459,7 +491,7 @@
             BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0">
       <DockPanel>
         <TextBlock DockPanel.Dock="Top" Text="CONSOLE"
-                   Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                   Foreground="{DynamicResource AccentBlueBrush}" FontSize="11"
                    Margin="10,5" FontWeight="SemiBold" />
         <ScrollViewer Margin="10,0,10,6">
           <ItemsControl ItemsSource="{Binding ConsoleLines}">
@@ -481,7 +513,7 @@
               BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,0,1,0">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="ASSETS"
-                     Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                     Foreground="{DynamicResource AccentBlueBrush}" FontSize="11"
                      Margin="10,7" FontWeight="SemiBold" />
           <TextBox DockPanel.Dock="Top" Margin="8,0,8,6" PlaceholderText="filter…"
                    Text="{Binding BrowserFilter, Mode=TwoWay}" FontSize="12" />
@@ -617,7 +649,7 @@
               BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1,0,0,0">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="INSPECTOR"
-                     Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                     Foreground="{DynamicResource AccentBlueBrush}" FontSize="11"
                      Margin="10,7" FontWeight="SemiBold" />
           <DockPanel Margin="10,0,10,8" DataContext="{Binding SelectedDocument}">
             <StackPanel DockPanel.Dock="Top">
@@ -633,7 +665,7 @@
               <StackPanel Spacing="2">
                 <!-- Mesh part picker (only present for 3D documents). -->
                 <TextBlock Text="MESHES — select to isolate"
-                           Foreground="{DynamicResource SubtleTextBrush}" FontSize="11"
+                           Foreground="{DynamicResource AccentBlueBrush}" FontSize="11"
                            FontWeight="SemiBold" Margin="0,2,0,4"
                            IsVisible="{Binding Parts, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
                 <ListBox ItemsSource="{Binding Parts}"
@@ -657,7 +689,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="5"
                             IsVisible="{Binding HasMaterials, FallbackValue=False}">
                   <TextBlock Text="TEXTURES" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource SubtleTextBrush}" />
+                             Foreground="{DynamicResource AccentBlueBrush}" />
 
                   <!-- Whole-model empire swap — the headline action. -->
                   <StackPanel Orientation="Horizontal" Spacing="6"
@@ -672,6 +704,7 @@
                   <!-- Per-material list with quick per-material empire swap. -->
                   <ListBox ItemsSource="{Binding Materials}"
                            SelectedItem="{Binding SelectedMaterial, Mode=TwoWay}"
+                           Classes="accentBlue"
                            MaxHeight="180" Background="Transparent" BorderThickness="0">
                     <ListBox.ItemTemplate>
                       <DataTemplate>
@@ -697,6 +730,7 @@
                            PlaceholderText="search textures…" />
                   <ListBox ItemsSource="{Binding FilteredTextures}"
                            SelectedItem="{Binding PickedTexture, Mode=TwoWay}"
+                           Classes="accentBlue"
                            MaxHeight="160" Background="Transparent" BorderThickness="0">
                     <ListBox.ItemTemplate>
                       <DataTemplate>
@@ -712,7 +746,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="6"
                             IsVisible="{Binding CanAnimate, FallbackValue=False}">
                   <TextBlock Text="ANIMATION" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource SubtleTextBrush}" />
+                             Foreground="{DynamicResource AccentBlueBrush}" />
                   <Button Content="Load anims.ubr…" Click="OnLoadAnimations" HorizontalAlignment="Stretch" />
                   <ComboBox ItemsSource="{Binding AnimClips}" SelectedItem="{Binding ActiveClip, Mode=TwoWay}"
                             PlaceholderText="select a clip" HorizontalAlignment="Stretch">
@@ -732,7 +766,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="6"
                             IsVisible="{Binding HasSkeleton, FallbackValue=False}">
                   <TextBlock Text="SKELETON" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource SubtleTextBrush}" />
+                             Foreground="{DynamicResource AccentBlueBrush}" />
                   <ToggleButton Content="Show Bones" IsChecked="{Binding ShowSkeleton, Mode=TwoWay}"
                                 HorizontalAlignment="Stretch" />
                 </StackPanel>

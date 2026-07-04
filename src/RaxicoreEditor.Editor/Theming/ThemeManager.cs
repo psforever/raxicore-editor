@@ -60,6 +60,9 @@ namespace RaxicoreEditor.Editor.Theming
                 Set("AccentRedBrush", 0xFFB91C1C);
                 Set("AccentBlueBrush", 0xFF1D4ED8);
                 Set("AccentPurpleBrush", 0xFF6D28D9);
+                SetColor("AccentRedColor", 0xFFB91C1C);
+                SetColor("AccentBlueColor", 0xFF1D4ED8);
+                SetColor("AccentPurpleColor", 0xFF6D28D9);
             }
             else
             {
@@ -75,6 +78,9 @@ namespace RaxicoreEditor.Editor.Theming
                 Set("AccentRedBrush", 0xFFF87171);
                 Set("AccentBlueBrush", 0xFF60A5FA);
                 Set("AccentPurpleBrush", 0xFFA78BFA);
+                SetColor("AccentRedColor", 0xFFF87171);
+                SetColor("AccentBlueColor", 0xFF60A5FA);
+                SetColor("AccentPurpleColor", 0xFFA78BFA);
             }
         }
 
@@ -85,5 +91,8 @@ namespace RaxicoreEditor.Editor.Theming
                 brush.Color = Color.FromUInt32(argb);
             }
         }
+
+        // Color resources are value types, so replace the entry (DynamicResource consumers re-resolve).
+        private void SetColor(string key, uint argb) => _app.Resources[key] = Color.FromUInt32(argb);
     }
 }
