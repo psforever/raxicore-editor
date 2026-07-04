@@ -11,8 +11,7 @@ namespace RaxicoreEditor.Editor.Rendering
         private float _pitch = 0.5f;
         private float _distance = 10f;
         private float _fovY = MathF.PI / 180f * 50f;
-        private float _near = 0.05f;
-        private float _far = 5000f;
+        private float _radius = 10f; // scene radius from the last Frame(); drives adaptive near/far
 
         public void Orbit(float dYaw, float dPitch)
         {
@@ -43,8 +42,8 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 radius = 1f;
             }
+            _radius = radius;
             _distance = radius / MathF.Tan(_fovY * 0.5f) * 1.4f;
-            _far = MathF.Max(5000f, _distance * 10f);
         }
 
         public Vector3 Position
@@ -68,13 +67,25 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 aspect = 1f;
             }
+            // Adaptive near/far hugging the framed scene, rather than a fixed 0.05 near with a
+            // distance×10 far. The old wide range left almost no depth precision at continent distances,
+            // so the coplanar water sheet and seabed z-fought badly. Keeping near a healthy fraction of
+            // the view distance (and far just past the scene) restores precision at every zoom level.
+            float far = _distance + _radius * 1.5f + 1f;
+            float near = MathF.Max(0.02f, (_distance - _radius * 1.5f) * 0.5f);
+            if (near >= far) near = far * 0.001f;
+
             float f = 1f / MathF.Tan(_fovY * 0.5f);
-            // Row-vector convention (point * matrix), uploaded directly to a column-major GLSL mat4.
+            // Reversed-Z depth (near→1, far→0): pairs with a 0.0 depth clear and a Greater compare in
+            // the pipelines. Float depth then keeps its fine precision out at the far plane instead of
+            // wasting it near the camera, which is what lets the coplanar continent water/seabed and
+            // distant terrain resolve cleanly. Row-vector convention (point * matrix), uploaded directly
+            // to a column-major GLSL mat4.
             var p = new Matrix4x4(
                 f / aspect, 0, 0, 0,
                 0, -f, 0, 0,
-                0, 0, _far / (_near - _far), -1,
-                0, 0, (_near * _far) / (_near - _far), 0);
+                0, 0, near / (far - near), -1,
+                0, 0, (near * far) / (far - near), 0);
             return p;
         }
     }

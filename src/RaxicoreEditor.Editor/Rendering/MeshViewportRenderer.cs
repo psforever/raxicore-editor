@@ -262,7 +262,7 @@ namespace RaxicoreEditor.Editor.Rendering
 
             var clears = stackalloc ClearValue[2];
             clears[0] = new ClearValue(new ClearColorValue(0.04f, 0.04f, 0.05f, 1f));
-            clears[1] = new ClearValue(depthStencil: new ClearDepthStencilValue(1f, 0));
+            clears[1] = new ClearValue(depthStencil: new ClearDepthStencilValue(0f, 0)); // reversed-Z: far = 0
 
             var rp = new RenderPassBeginInfo
             {
@@ -692,7 +692,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 SType = StructureType.PipelineDepthStencilStateCreateInfo,
                 DepthTestEnable = true,
                 DepthWriteEnable = true,
-                DepthCompareOp = CompareOp.Less,
+                DepthCompareOp = CompareOp.Greater, // reversed-Z
             };
             var cba = new PipelineColorBlendAttachmentState
             {
@@ -811,7 +811,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 SType = StructureType.PipelineDepthStencilStateCreateInfo,
                 DepthTestEnable = true,
                 DepthWriteEnable = false,
-                DepthCompareOp = CompareOp.Less,
+                DepthCompareOp = CompareOp.Greater, // reversed-Z
             };
             var cba = new PipelineColorBlendAttachmentState
             {
@@ -946,7 +946,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 SType = StructureType.PipelineDepthStencilStateCreateInfo,
                 DepthTestEnable = true,
                 DepthWriteEnable = false,
-                DepthCompareOp = CompareOp.Less,
+                DepthCompareOp = CompareOp.Greater, // reversed-Z
             };
             var cba = new PipelineColorBlendAttachmentState
             {

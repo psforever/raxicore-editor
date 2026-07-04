@@ -948,6 +948,65 @@ namespace RaxicoreEditor.Editor.Documents
             };
         }
 
+        // materials.adb defines a few continent surfaces (notably water) as named render materials rather
+        // than direct textures, so ResolveNamed can't find them and they fall back to the 1×1 white
+        // texture — that's the flat white "water" plane. The editor has no materials.adb resolver, so map
+        // the visually-important ones to the engine's own water-surface / seabed textures. "water" is
+        // additionally drawn translucent (a fixed alpha) so it reads like the original's semi-transparent
+        // water rather than an opaque sheet. Resolved copies are cached and shared by reference so the
+        // renderer's texture dedup collapses the ~800 water tiles to a single GPU texture.
+        private readonly record struct AliasTex(byte[] Bgra, int Width, int Height, bool Translucent);
+
+        private static readonly (string Material, string Texture, byte Alpha)[] MaterialAliases =
+        {
+            // ~0.88 opacity: deep water reads as solid dark-teal (the bright rocky seabed a few units
+            // below doesn't show through as noise), while the slight translucency still hints at the
+            // bottom in the shallows near shore.
+            ("water", "old_water", 224),
+            ("ocean_floor", "underwater", 255), // opaque seabed beneath the water
+        };
+
+        // The water sheet is baked coplanar with the seabed terrain (both sit at essentially the same
+        // height across the open ocean), so without separation they z-fight. Lift the water a few world
+        // units — enough to win the depth test cleanly at any zoom now that the camera's near/far hug the
+        // scene, yet far too small (vs. the terrain's tens-of-units relief) for islands to stop occluding
+        // it or for the raised shoreline to be visible.
+        private const float WaterLiftY = 6f;
+
+        private static readonly Dictionary<string, AliasTex?> AliasCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly object AliasLock = new();
+
+        private static AliasTex? ResolveMaterialAlias(TextureProvider textures, string material)
+        {
+            lock (AliasLock)
+            {
+                if (AliasCache.TryGetValue(material, out AliasTex? cached)) return cached;
+            }
+            AliasTex? result = null;
+            foreach (var (mat, tex, alpha) in MaterialAliases)
+            {
+                if (!material.Equals(mat, StringComparison.OrdinalIgnoreCase)) continue;
+                DdsImage? img = textures.Get(tex);
+                if (img != null)
+                {
+                    byte[] bgra = img.Bgra;
+                    bool translucent = alpha != 255;
+                    if (translucent)
+                    {
+                        bgra = (byte[])bgra.Clone(); // don't mutate the cached decode
+                        for (int i = 3; i < bgra.Length; i += 4) bgra[i] = alpha;
+                    }
+                    result = new AliasTex(bgra, img.Width, img.Height, translucent);
+                }
+                break;
+            }
+            lock (AliasLock)
+            {
+                AliasCache[material] = result;
+            }
+            return result;
+        }
+
         // Per-material accumulator: positions (view-space), provided normals (or zero), uvs, indices.
         private sealed class Builder
         {
@@ -983,16 +1042,41 @@ namespace RaxicoreEditor.Editor.Documents
                 }
 
                 (DdsImage? dds, string? key) = textures.ResolveNamed(Material);
+                byte[]? texBgra = dds?.Bgra;
+                int texW = dds?.Width ?? 0, texH = dds?.Height ?? 0;
+                string? texName = dds != null ? key : null;
+                bool translucent = MeshSubmesh.IsMaskTextureName(texName);
+                bool water = false;
+
+                // Fall back to the materials.adb material aliases (water/seabed) when there's no direct
+                // texture, so continent water renders as translucent water instead of a white plane.
+                if (dds == null && ResolveMaterialAlias(textures, Material) is AliasTex alias)
+                {
+                    texBgra = alias.Bgra;
+                    texW = alias.Width;
+                    texH = alias.Height;
+                    texName = Material;
+                    translucent = alias.Translucent;
+                    water = Material.Equals("water", StringComparison.OrdinalIgnoreCase);
+                }
+
+                // Nudge the water sheet just above the coplanar seabed (view Y is up) so it stops
+                // z-fighting the terrain beneath it. See WaterLiftY.
+                if (water)
+                {
+                    for (int i = 1; i < verts.Length; i += 8) verts[i] += WaterLiftY;
+                }
+
                 return new MeshSubmesh
                 {
                     Material = Material,
                     Vertices = verts,
                     Indices = idx,
-                    TextureBgra = dds?.Bgra,
-                    TextureWidth = dds?.Width ?? 0,
-                    TextureHeight = dds?.Height ?? 0,
-                    TextureName = dds != null ? key : null,
-                    IsTranslucent = MeshSubmesh.IsMaskTextureName(dds != null ? key : null),
+                    TextureBgra = texBgra,
+                    TextureWidth = texW,
+                    TextureHeight = texH,
+                    TextureName = texName,
+                    IsTranslucent = translucent,
                     BoneA = AnySkin ? SkinA.ToArray() : null,
                     BoneB = AnySkin ? SkinB.ToArray() : null,
                     Weight = AnySkin ? SkinW.ToArray() : null,
