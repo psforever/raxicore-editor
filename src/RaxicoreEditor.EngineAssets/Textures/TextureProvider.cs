@@ -102,16 +102,29 @@ namespace RaxicoreEditor.EngineAssets.Textures
             {
                 return (null, null);
             }
-            // Authoritative: materials.adb states the exact texture the engine binds for this material
+            // Resolve the BASE surface material of the section — the prefix of an object "<base>+<lightmap>"
+            // or the blend of a terrain "<mapCell>+<mapBlend>" — NOT the full "<base>+<lightmap>" section
+            // name. The full section name's materials.adb entry names the section's baked LIGHTMAP, so
+            // querying it painted warpgates and facility shells/walls with their dark lightmap instead of
+            // their surface texture (their lightmap suffixes — warp_base_ne, aslod1_cap_ne, …— don't start
+            // with '_', so the old "suffix starts with _" test misfiled them as terrain blends).
+            string baseMat = BaseMaterial(materialName);
+
+            // Authoritative: materials.adb states the exact texture the engine binds for the base material
             // (often a differently-named texture than the material — e.g. "building_surface" → "alien1").
-            if (_materials?.Lookup(materialName) is MaterialsAdb.MaterialDef def && def.Texture != null &&
+            if (_materials?.Lookup(baseMat) is MaterialsAdb.MaterialDef def && def.Texture != null &&
                 _index.ContainsKey(def.Texture))
             {
                 DdsImage? img = Get(def.Texture);
                 if (img != null) return (img, def.Texture);
             }
-            // Fallback heuristic: the base-name-as-texture case (materials.adb stubs whose texture is just
-            // the material name), terrain blends, and mask overlays.
+            // The base material is very often itself the texture key.
+            if (_index.ContainsKey(baseMat))
+            {
+                DdsImage? img = Get(baseMat);
+                if (img != null) return (img, baseMat);
+            }
+            // Fallback heuristic: the other half, and mask overlays.
             foreach (string candidate in Candidates(materialName))
             {
                 if (_index.ContainsKey(candidate))
@@ -190,11 +203,13 @@ namespace RaxicoreEditor.EngineAssets.Textures
 
         public bool CanResolve(string materialName)
         {
-            if (_materials?.Lookup(materialName) is MaterialsAdb.MaterialDef def && def.Texture != null &&
+            string baseMat = BaseMaterial(materialName);
+            if (_materials?.Lookup(baseMat) is MaterialsAdb.MaterialDef def && def.Texture != null &&
                 _index.ContainsKey(def.Texture))
             {
                 return true;
             }
+            if (_index.ContainsKey(baseMat)) return true;
             foreach (string candidate in Candidates(materialName))
             {
                 if (_index.ContainsKey(candidate)) return true;
@@ -202,19 +217,54 @@ namespace RaxicoreEditor.EngineAssets.Textures
             return false;
         }
 
-        // Candidate texture keys, in priority order.
-        //
-        // A section's material name is <base>+<suffix>. The engine looks the whole name up in
-        // materials.adb and uses its mat_texture1 (the BASE surface texture). Two shipped naming forms
-        // determine which half is the base:
-        //   • object materials:  "<baseTexture>+<lightmap>"  — the lightmap suffix starts with '_'
-        //                         (e.g. "rails01+_tower_b_shell_ne" → base "rails01"); the BASE is the prefix.
-        //   • terrain blends:    "<mapCell>+<mapBlend>"       — (e.g. "map01+map010000" → "map010000");
-        //                         the BASE is the suffix.
-        // So try the base half first per that rule, then the other half. (Trying the lightmap suffix first
-        // — as this used to — applied ~1000 tower/facility surfaces as their shadow lightmap, not their
-        // actual texture.) Finally, a last-resort "mask_" insertion for translucent overlays whose texture
-        // omits a token from the material name (shield domes: "force_dome_amp_inner" → "force_dome_mask_amp_inner").
+        /// <summary>
+        /// The BASE surface material of a section name. A section is either an object material
+        /// <c>"&lt;base&gt;+&lt;lightmap&gt;"</c> (the base is the PREFIX) or a terrain blend
+        /// <c>"&lt;mapCell&gt;+&lt;mapBlend&gt;"</c> (the base is the SUFFIX). A terrain blend is the only
+        /// case where the suffix is the surface — recognised structurally: the prefix is a map cell
+        /// (<c>"map"</c>+digits, e.g. <c>map05</c>) and the suffix begins with it (<c>map050000</c>). Every
+        /// other <c>+</c> form is an object material whose suffix is a lightmap, so the prefix is the base —
+        /// regardless of whether the lightmap suffix starts with <c>'_'</c> (many don't: <c>warp_base_ne</c>,
+        /// <c>aslod1_cap_ne</c>, <c>cf_cryo_wall1a_ne</c>). <c>"&lt;base&gt;+null"</c> has no lightmap → prefix.
+        /// </summary>
+        private static string BaseMaterial(string material)
+        {
+            int plus = material.LastIndexOf('+');
+            if (plus <= 0 || plus + 1 >= material.Length)
+            {
+                return material;
+            }
+            string prefix = material.Substring(0, plus);
+            string suffix = material.Substring(plus + 1);
+            if (IsNullToken(suffix))
+            {
+                return prefix;
+            }
+            bool terrainBlend = IsMapCell(prefix) && suffix.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            return terrainBlend ? suffix : prefix;
+        }
+
+        // A terrain map-cell token: "map" followed by digits ("map05", "map130024").
+        private static bool IsMapCell(string s)
+        {
+            if (s.Length <= 3 || s[0] != 'm' || s[1] != 'a' || s[2] != 'p')
+            {
+                return false;
+            }
+            for (int i = 3; i < s.Length; i++)
+            {
+                if (!char.IsDigit(s[i]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Candidate texture keys, in priority order — the fallback after BaseMaterial fails to resolve.
+        // Same base-half rule as BaseMaterial (object → prefix, terrain blend → suffix), then the other
+        // half, then a last-resort "mask_" insertion for translucent overlays whose texture omits a token
+        // (shield domes: "force_dome_amp_inner" → "force_dome_mask_amp_inner").
         private static IEnumerable<string> Candidates(string material)
         {
             yield return material;
@@ -223,12 +273,12 @@ namespace RaxicoreEditor.EngineAssets.Textures
             {
                 string prefix = plus > 0 ? material.Substring(0, plus) : "";
                 string suffix = plus + 1 < material.Length ? material.Substring(plus + 1) : "";
-                // "<base>+null" has no lightmap, so the base (prefix) is the texture. "null" is a sentinel,
-                // NOT a real texture — even though a blank texture literally named "null" is shipped — so it
-                // must never be tried as one (that painted the sea and other "+null" surfaces white).
-                bool suffixIsBase = suffix.StartsWith("_", StringComparison.Ordinal) || IsNullToken(suffix);
-                string first = suffixIsBase ? prefix : suffix;   // the base texture half
-                string second = suffixIsBase ? suffix : prefix;
+                // "null" is a no-texture sentinel — even though a blank texture literally named "null" is
+                // shipped — so it must never be tried as one (that painted the sea and "+null" surfaces white).
+                bool terrainBlend = IsMapCell(prefix) &&
+                                    suffix.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+                string first = terrainBlend ? suffix : prefix;   // the base texture half
+                string second = terrainBlend ? prefix : suffix;
                 if (first.Length > 0 && !IsNullToken(first)) yield return first;
                 if (second.Length > 0 && !IsNullToken(second)) yield return second;
             }

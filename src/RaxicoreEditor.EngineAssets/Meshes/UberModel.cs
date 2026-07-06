@@ -932,10 +932,13 @@ namespace RaxicoreEditor.EngineAssets.Meshes
         {
             if (!_opened || name == null) return null;
 
+            // Record names are matched case-insensitively: placements sometimes differ in case from the
+            // record they name (e.g. the map_object "VT_building_vs" vs the record "Vt_building_vs"), and
+            // the engine resolves them regardless of case.
             int found = -1;
             for (int i = 0; i < _records.Count; i++)
             {
-                if (_records[i].Name == name) { found = i; break; }
+                if (string.Equals(_records[i].Name, name, StringComparison.OrdinalIgnoreCase)) { found = i; break; }
             }
             if (found < 0) return null;
             return FetchMeshSystemAt(found);
