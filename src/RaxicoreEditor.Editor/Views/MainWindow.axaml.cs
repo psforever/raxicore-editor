@@ -30,6 +30,7 @@ namespace RaxicoreEditor.Editor.Views
             {
                 SyncStatusThemeChecks(app.Themes.StatusBar);
             }
+            SyncModelDetailChecks(RenderSettings.Detail);
         }
 
         private async void OnOpenFolder(object? sender, RoutedEventArgs e)
@@ -158,6 +159,34 @@ namespace RaxicoreEditor.Editor.Views
             StatusDisruptionItem.IsChecked = theme == StatusBarTheme.Disruption;
         }
 
+        private void OnDetailFull(object? sender, RoutedEventArgs e) => SetModelDetail(ModelDetail.Detailed);
+        private void OnDetailLow(object? sender, RoutedEventArgs e) => SetModelDetail(ModelDetail.Low);
+
+        private async void SetModelDetail(ModelDetail detail)
+        {
+            bool changed = RenderSettings.Detail != detail;
+            RenderSettings.Detail = detail;
+            if (Application.Current is App app)
+            {
+                app.Settings.ModelDetail = detail.ToString();
+                app.Settings.Save();
+            }
+            SyncModelDetailChecks(detail);
+            if (!changed)
+            {
+                return;
+            }
+            _vm.Log($"Model detail: {detail}. Rebuilding open 3D views…");
+            try { await _vm.ReloadMeshDocumentsAsync(); }
+            catch (Exception ex) { _vm.Log("reload failed: " + ex.Message); }
+        }
+
+        private void SyncModelDetailChecks(ModelDetail detail)
+        {
+            DetailFullItem.IsChecked = detail == ModelDetail.Detailed;
+            DetailLowItem.IsChecked = detail == ModelDetail.Low;
+        }
+
         private async void OnExportObj(object? sender, RoutedEventArgs e)
         {
             if (_vm.SelectedDocument is not MeshDocument mesh || mesh.SelectedPart is not MeshPart part)
@@ -268,6 +297,38 @@ namespace RaxicoreEditor.Editor.Views
             if (sender is Button { Tag: string empire } && _vm.SelectedDocument is MeshDocument mesh)
             {
                 mesh.ApplyEmpireToModel(empire);
+            }
+        }
+
+        // Tab right-click menu. The ContextMenu inherits the tab's DataContext (the DocumentBase).
+        private void OnTabClose(object? sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem { DataContext: DocumentBase doc }) _vm.CloseDocument(doc);
+        }
+
+        private void OnTabCloseBefore(object? sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem { DataContext: DocumentBase doc }) _vm.CloseDocumentsBefore(doc);
+        }
+
+        private void OnTabCloseAfter(object? sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem { DataContext: DocumentBase doc }) _vm.CloseDocumentsAfter(doc);
+        }
+
+        private void OnTabCloseOthers(object? sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem { DataContext: DocumentBase doc }) _vm.CloseOtherDocuments(doc);
+        }
+
+        private void OnTabCloseAll(object? sender, RoutedEventArgs e) => _vm.CloseAllDocuments();
+
+        // Play a single embedded snippet (the ▶ button's DataContext is the AudioClip).
+        private void OnPlaySnippet(object? sender, RoutedEventArgs e)
+        {
+            if (sender is Button { DataContext: AudioClip clip } && _vm.SelectedDocument is AudioDocument audio)
+            {
+                audio.PlayClip(clip);
             }
         }
 

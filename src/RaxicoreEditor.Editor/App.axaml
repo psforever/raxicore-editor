@@ -37,8 +37,8 @@
          and asset/file selection highlights. -->
     <SolidColorBrush x:Key="AccentPrimaryBrush" Color="#532177" />
     <SolidColorBrush x:Key="AccentSecondaryBrush" Color="#385e6a" />
-    <!-- Soft shadow behind accent-coloured text (section headers): light in dark mode, dark in light
-         mode. ThemeManager swaps it; default below is the dark-mode (light) value. -->
-    <Color x:Key="AccentTextShadowColor">#99FFFFFF</Color>
+    <!-- Tertiary: a plain, vivid per-theme colour for section headers — red (TR) / blue (NC) / purple
+         (VS) / teal (Black Ops). Fixed across light/dark (only SetStatusBarTheme touches it). -->
+    <SolidColorBrush x:Key="AccentTertiaryBrush" Color="#7c3aed" />
   </Application.Resources>
 </Application>

@@ -72,6 +72,16 @@
                     ToggleType="Radio" x:Name="StatusDisruptionItem" />
         </MenuItem>
       </MenuItem>
+      <MenuItem>
+        <MenuItem.Header><AccessText Text="_Render" /></MenuItem.Header>
+        <MenuItem>
+          <MenuItem.Header><AccessText Text="_Model Detail" /></MenuItem.Header>
+          <MenuItem Header="Detailed" Click="OnDetailFull"
+                    ToggleType="Radio" IsChecked="True" x:Name="DetailFullItem" />
+          <MenuItem Header="LOD (low detail)" Click="OnDetailLow"
+                    ToggleType="Radio" x:Name="DetailLowItem" />
+        </MenuItem>
+      </MenuItem>
     </Menu>
   </shadui:Window.MenuBarContent>
 
@@ -87,7 +97,13 @@
        BottomBorder, AppTitlePanel, MaximizeIcon, ButtonsPanel, RightButtons, MenuBar) are preserved. -->
   <shadui:Window.Template>
     <ControlTemplate>
-      <Border Background="{TemplateBinding Background}"
+      <!-- Named so the maximized-state style below can inset it. A custom-chrome (frameless) window
+           maximizes ~8px past every screen edge on Windows (the SM_CXFRAME + SM_CXPADDEDBORDER metrics,
+           which are ~8 DIPs at any DPI); that inset is applied only when WindowState=Maximized. Avalonia
+           only computes OffScreenMargin when the extend-client-area hint changes, never on maximize, so
+           it can't be used here. -->
+      <Border Name="WindowRootBorder"
+              Background="{TemplateBinding Background}"
               BorderBrush="{TemplateBinding BorderBrush}"
               BorderThickness="{TemplateBinding BorderThickness}"
               ClipToBounds="True"
@@ -324,12 +340,11 @@
       <Setter Property="Background" Value="{DynamicResource AccentSecondaryBrush}" />
     </Style>
 
-    <!-- Accent-coloured section headers get a soft shadow so they stay legible against the panel:
-         light in dark mode, dark in light mode (AccentTextShadowColor is theme-swapped). -->
-    <Style Selector="TextBlock.sectionHeader">
-      <Setter Property="Effect">
-        <DropShadowEffect BlurRadius="3" OffsetX="0" OffsetY="1" Color="{DynamicResource AccentTextShadowColor}" />
-      </Setter>
+    <!-- Maximized: inset by the ~8px frameless-maximize overhang so the title bar / status bar / edges
+         don't spill past the screen, and square off the corners to fill it. -->
+    <Style Selector="shadui|Window[WindowState=Maximized] /template/ Border#WindowRootBorder">
+      <Setter Property="Margin" Value="8" />
+      <Setter Property="CornerRadius" Value="0" />
     </Style>
   </shadui:Window.Styles>
 
@@ -384,6 +399,59 @@
         </Border>
         <TextBlock Grid.Row="1" Text="{Binding Info}" Foreground="{DynamicResource SubtleTextBrush}"
                    HorizontalAlignment="Center" Margin="6" FontSize="12" />
+      </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="doc:AudioDocument">
+      <Grid Background="{DynamicResource ViewportBackgroundBrush}">
+        <Border VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="460" MinWidth="320"
+                Background="{DynamicResource PanelBackgroundBrush}" Padding="22"
+                BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1" CornerRadius="8">
+          <StackPanel Spacing="14">
+            <TextBlock Text="{Binding Title}" Foreground="{DynamicResource TextBrush}"
+                       FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+            <TextBlock Text="{Binding AudioInfo}" Foreground="{DynamicResource SubtleTextBrush}"
+                       FontSize="12" FontFamily="Cascadia Code,Consolas,monospace" />
+
+            <!-- Transport (shown when the OS can play the file). -->
+            <StackPanel Spacing="12" IsVisible="{Binding CanPlay}">
+              <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                <ToggleButton Content="Play / Pause" IsChecked="{Binding IsPlaying, Mode=TwoWay}" MinWidth="110" />
+                <Button Content="Stop" Command="{Binding StopCommand}" MinWidth="64" />
+              </StackPanel>
+              <Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
+                <TextBlock Grid.Column="0" Text="{Binding PositionText}" FontSize="11" VerticalAlignment="Center"
+                           Foreground="{DynamicResource SubtleTextBrush}" FontFamily="Cascadia Code,Consolas,monospace" />
+                <Slider Grid.Column="1" Minimum="0" Maximum="{Binding DurationSeconds}"
+                        Value="{Binding PositionSeconds, Mode=TwoWay}" Margin="10,0" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="2" Text="{Binding DurationText}" FontSize="11" VerticalAlignment="Center"
+                           Foreground="{DynamicResource SubtleTextBrush}" FontFamily="Cascadia Code,Consolas,monospace" />
+              </Grid>
+
+              <!-- Embedded snippets (RIFF cue regions): tap ▶ to play just that section. -->
+              <StackPanel Spacing="6" IsVisible="{Binding HasClips}">
+                <TextBlock Text="SNIPPETS" FontSize="11" FontWeight="SemiBold" Margin="0,4,0,0"
+                           Foreground="{DynamicResource SubtleTextBrush}" />
+                <ListBox ItemsSource="{Binding Clips}" MaxHeight="200"
+                         Background="Transparent" BorderThickness="0">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Grid.Column="0" Text="{Binding Display}" FontSize="11" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextBrush}" />
+                        <Button Grid.Column="1" Content="▶" Click="OnPlaySnippet" Padding="8,1" FontSize="11" MinWidth="0" />
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </StackPanel>
+            </StackPanel>
+
+            <!-- Fallback note (non-Windows, or an undecodable format). -->
+            <TextBlock Text="{Binding PlaybackNote}" IsVisible="{Binding !CanPlay}" TextWrapping="Wrap"
+                       Foreground="{DynamicResource SubtleTextBrush}" FontSize="12" />
+          </StackPanel>
+        </Border>
       </Grid>
     </DataTemplate>
 
@@ -539,7 +607,7 @@
             BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0">
       <DockPanel>
         <TextBlock DockPanel.Dock="Top" Text="CONSOLE"
-                   Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" FontSize="11"
+                   Foreground="{DynamicResource AccentTertiaryBrush}" FontSize="11"
                    Margin="10,5" FontWeight="SemiBold" />
         <ScrollViewer Margin="10,0,10,6">
           <ItemsControl ItemsSource="{Binding ConsoleLines}">
@@ -561,7 +629,7 @@
               BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,0,1,0">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="ASSETS"
-                     Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" FontSize="11"
+                     Foreground="{DynamicResource AccentTertiaryBrush}" FontSize="11"
                      Margin="10,7" FontWeight="SemiBold" />
           <TextBox DockPanel.Dock="Top" Margin="8,0,8,6" PlaceholderText="filter…"
                    Text="{Binding BrowserFilter, Mode=TwoWay}" FontSize="12" />
@@ -681,6 +749,16 @@
         <TabControl.ItemTemplate>
           <DataTemplate>
             <StackPanel Orientation="Horizontal" Spacing="8">
+              <StackPanel.ContextMenu>
+                <ContextMenu>
+                  <MenuItem Header="Close" Click="OnTabClose" />
+                  <Separator />
+                  <MenuItem Header="Close Tabs Before" Click="OnTabCloseBefore" />
+                  <MenuItem Header="Close Tabs After" Click="OnTabCloseAfter" />
+                  <MenuItem Header="Close Other Tabs" Click="OnTabCloseOthers" />
+                  <MenuItem Header="Close All Tabs" Click="OnTabCloseAll" />
+                </ContextMenu>
+              </StackPanel.ContextMenu>
               <TextBlock Text="{Binding TabHeader}" VerticalAlignment="Center" />
               <Button Content="✕" Command="{Binding CloseCommand}" Width="18" Height="18"
                       Padding="0" FontSize="11" Background="Transparent" BorderThickness="0"
@@ -697,7 +775,7 @@
               BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1,0,0,0">
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="INSPECTOR"
-                     Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" FontSize="11"
+                     Foreground="{DynamicResource AccentTertiaryBrush}" FontSize="11"
                      Margin="10,7" FontWeight="SemiBold" />
           <DockPanel Margin="10,0,10,8" DataContext="{Binding SelectedDocument}">
             <StackPanel DockPanel.Dock="Top">
@@ -713,10 +791,13 @@
               <StackPanel Spacing="2">
                 <!-- Mesh part picker (only present for 3D documents). -->
                 <TextBlock Text="MESHES — select to isolate"
-                           Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" FontSize="11"
+                           Foreground="{DynamicResource AccentTertiaryBrush}" FontSize="11"
                            FontWeight="SemiBold" Margin="0,2,0,4"
                            IsVisible="{Binding Parts, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
-                <ListBox ItemsSource="{Binding Parts}"
+                <TextBox Text="{Binding MeshFilter, Mode=TwoWay}" FontSize="11" Margin="0,0,0,4"
+                         PlaceholderText="search meshes…"
+                         IsVisible="{Binding Parts, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+                <ListBox ItemsSource="{Binding FilteredParts}"
                          SelectedItem="{Binding SelectedPart, Mode=TwoWay}"
                          MaxHeight="200" Background="Transparent" BorderThickness="0"
                          IsVisible="{Binding Parts, Converter={x:Static conv:ObjectConverters.IsNotNull}}">
@@ -737,7 +818,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="5"
                             IsVisible="{Binding HasMaterials, FallbackValue=False}">
                   <TextBlock Text="TEXTURES" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" />
+                             Foreground="{DynamicResource AccentTertiaryBrush}" />
 
                   <!-- Whole-model empire swap — the headline action. -->
                   <StackPanel Orientation="Horizontal" Spacing="6"
@@ -794,7 +875,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="6"
                             IsVisible="{Binding CanAnimate, FallbackValue=False}">
                   <TextBlock Text="ANIMATION" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" />
+                             Foreground="{DynamicResource AccentTertiaryBrush}" />
                   <Button Content="Load anims.ubr…" Click="OnLoadAnimations" HorizontalAlignment="Stretch" />
                   <ComboBox ItemsSource="{Binding AnimClips}" SelectedItem="{Binding ActiveClip, Mode=TwoWay}"
                             PlaceholderText="select a clip" HorizontalAlignment="Stretch">
@@ -814,7 +895,7 @@
                 <StackPanel Margin="0,12,0,0" Spacing="6"
                             IsVisible="{Binding HasSkeleton, FallbackValue=False}">
                   <TextBlock Text="SKELETON" FontSize="11" FontWeight="SemiBold"
-                             Foreground="{DynamicResource AccentPrimaryBrush}" Classes="sectionHeader" />
+                             Foreground="{DynamicResource AccentTertiaryBrush}" />
                   <ToggleButton Content="Show Bones" IsChecked="{Binding ShowSkeleton, Mode=TwoWay}"
                                 HorizontalAlignment="Stretch" />
                 </StackPanel>

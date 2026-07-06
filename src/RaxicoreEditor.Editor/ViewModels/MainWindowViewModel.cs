@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using RaxicoreEditor.EngineAssets.Archives;
@@ -26,6 +27,8 @@ namespace RaxicoreEditor.Editor.ViewModels
             CloseDocumentCommand = new RelayCommand<DocumentBase>(CloseDocument);
             ShowGameAssetsCommand = new RelayCommand(() => GameAssetsView = true);
             ShowFilesCommand = new RelayCommand(() => GameAssetsView = false);
+            // Dispose documents (e.g. the audio player's device + temp file) as their tabs are removed.
+            OpenDocuments.CollectionChanged += OnOpenDocumentsChanged;
             Log("Raxicore Editor ready. Open a folder or archive to begin.");
         }
 
@@ -244,6 +247,9 @@ namespace RaxicoreEditor.Editor.ViewModels
             var archives = new BrowserNode("Archives", root + "#pak", BrowserNodeKind.Category);
             var other = new BrowserNode("Other", root + "#other", BrowserNodeKind.Category);
 
+            // Continent display names ("map03 (Cyssor)") from the client's own english.str (startup.pak).
+            ContinentNames? continentNames = ContinentNames.TryLoad(root);
+
             var files = new List<string>();
             CollectFiles(root, files, 0);
             files.Sort(StringComparer.OrdinalIgnoreCase);
@@ -255,7 +261,7 @@ namespace RaxicoreEditor.Editor.ViewModels
                 switch (ext)
                 {
                     case ".ubr":
-                        if (IsContinentUbr(name)) continents.Children.Add(Leaf(name, f));
+                        if (IsContinentUbr(name)) continents.Children.Add(Leaf(ContinentLabel(name, continentNames), f));
                         else if (name.Contains("anim", StringComparison.OrdinalIgnoreCase)) anims.Children.Add(Leaf(name, f));
                         else models.Children.Add(Leaf(name, f));
                         break;
@@ -358,6 +364,14 @@ namespace RaxicoreEditor.Editor.ViewModels
             var node = new BrowserNode(name, path, BrowserNodeKind.Archive);
             node.SetLazyLoader(loader);
             return node;
+        }
+
+        // "map03.ubr" → "map03 (Cyssor)" when the continent name is known, else the raw file name.
+        private static string ContinentLabel(string fileName, ContinentNames? names)
+        {
+            string stem = Path.GetFileNameWithoutExtension(fileName);
+            string? continent = names?.Name(stem);
+            return continent != null ? $"{stem} ({continent})" : fileName;
         }
 
         /// <summary>map01.ubr … map99.ubr are the playable continents (terrain meshes).</summary>
@@ -728,6 +742,10 @@ namespace RaxicoreEditor.Editor.ViewModels
             {
                 return new MeshDocument(name, path, bytes);
             }
+            if (AudioDocument.IsWav(bytes))
+            {
+                return new AudioDocument(name, path, bytes);
+            }
             if (AnimDb.IsAnim(bytes))
             {
                 try { return new AnimDocument(name, path, bytes); }
@@ -803,6 +821,105 @@ namespace RaxicoreEditor.Editor.ViewModels
                 SelectedDocument = OpenDocuments.Count > 0
                     ? OpenDocuments[Math.Min(index, OpenDocuments.Count - 1)]
                     : null;
+            }
+        }
+
+        /// <summary>Rebuild every open 3D document so a changed render setting (e.g. LOD tier) takes effect.
+        /// Only file-backed sources can be reopened; others keep their current geometry until reopened.</summary>
+        public async Task ReloadMeshDocumentsAsync()
+        {
+            List<string> sources = OpenDocuments.OfType<MeshDocument>()
+                .Select(d => d.Source)
+                .Where(s => File.Exists(s.Contains('!') ? s.Substring(0, s.IndexOf('!')) : s))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (sources.Count == 0)
+            {
+                return;
+            }
+            string? active = SelectedDocument?.Source;
+            foreach (string src in sources)
+            {
+                DocumentBase? existing = OpenDocuments.FirstOrDefault(
+                    d => string.Equals(d.Source, src, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
+                {
+                    CloseDocument(existing);
+                }
+                await OpenPathAsync(src);
+            }
+            if (active != null)
+            {
+                DocumentBase? sel = OpenDocuments.FirstOrDefault(
+                    d => string.Equals(d.Source, active, StringComparison.OrdinalIgnoreCase));
+                if (sel != null)
+                {
+                    SelectedDocument = sel;
+                }
+            }
+        }
+
+        /// <summary>Close every tab to the left of <paramref name="doc"/>; keep it selected.</summary>
+        public void CloseDocumentsBefore(DocumentBase? doc)
+        {
+            if (doc is null) return;
+            int index = OpenDocuments.IndexOf(doc);
+            if (index <= 0) return;
+            for (int i = index - 1; i >= 0; i--)
+            {
+                OpenDocuments.RemoveAt(i);
+            }
+            SelectedDocument = doc;
+        }
+
+        /// <summary>Close every tab to the right of <paramref name="doc"/>; keep it selected.</summary>
+        public void CloseDocumentsAfter(DocumentBase? doc)
+        {
+            if (doc is null) return;
+            int index = OpenDocuments.IndexOf(doc);
+            if (index < 0) return;
+            for (int i = OpenDocuments.Count - 1; i > index; i--)
+            {
+                OpenDocuments.RemoveAt(i);
+            }
+            SelectedDocument = doc;
+        }
+
+        /// <summary>Close every tab except <paramref name="doc"/>; keep it selected.</summary>
+        public void CloseOtherDocuments(DocumentBase? doc)
+        {
+            if (doc is null || !OpenDocuments.Contains(doc)) return;
+            for (int i = OpenDocuments.Count - 1; i >= 0; i--)
+            {
+                if (!ReferenceEquals(OpenDocuments[i], doc))
+                {
+                    OpenDocuments.RemoveAt(i);
+                }
+            }
+            SelectedDocument = doc;
+        }
+
+        /// <summary>Close every open tab.</summary>
+        public void CloseAllDocuments()
+        {
+            // Remove one-by-one (not Clear) so each removal raises a Remove event and its document is disposed.
+            for (int i = OpenDocuments.Count - 1; i >= 0; i--)
+            {
+                OpenDocuments.RemoveAt(i);
+            }
+            SelectedDocument = null;
+        }
+
+        // Dispose any IDisposable document (audio player, temp file, …) when its tab is removed.
+        private static void OnOpenDocumentsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        {
+            if (e.OldItems == null)
+            {
+                return;
+            }
+            foreach (object? item in e.OldItems)
+            {
+                (item as IDisposable)?.Dispose();
             }
         }
 

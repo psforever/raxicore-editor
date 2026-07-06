@@ -61,16 +61,19 @@ namespace RaxicoreEditor.Editor.Theming
         public void SetStatusBarTheme(StatusBarTheme theme)
         {
             StatusBar = theme;
-            (uint background, uint loading) = theme switch
+            // background = status bar; loading = loading bar + selection; header = section-header text
+            // (a plain vivid colour, the same in light and dark mode).
+            (uint background, uint loading, uint header) = theme switch
             {
-                StatusBarTheme.Tradition  => (0xFF741D15u, 0xFF2C2C2Cu), // red / grey
-                StatusBarTheme.Liberty    => (0xFF1D4E9Au, 0xFFEEC53Au), // blue / gold
-                StatusBarTheme.Technology => (0xFF532177u, 0xFF385E6Au), // violet / teal
-                StatusBarTheme.Disruption => (0xFF27312Fu, 0xFF3F6270u), // army-green / cyan-teal
-                _                         => (0xFF532177u, 0xFF385E6Au),
+                StatusBarTheme.Tradition  => (0xFF741D15u, 0xFF2C2C2Cu, 0xFFDC2626u), // red / grey / red
+                StatusBarTheme.Liberty    => (0xFF1D4E9Au, 0xFFEEC53Au, 0xFF2563EBu), // blue / gold / blue
+                StatusBarTheme.Technology => (0xFF532177u, 0xFF385E6Au, 0xFF7C3AEDu), // violet / teal / purple
+                StatusBarTheme.Disruption => (0xFF27312Fu, 0xFF3F6270u, 0xFF14B8A6u), // army-green / cyan-teal / teal
+                _                         => (0xFF532177u, 0xFF385E6Au, 0xFF7C3AEDu),
             };
-            Set("AccentPrimaryBrush", background);     // status-bar background + section headers
+            Set("AccentPrimaryBrush", background);     // status-bar background
             Set("AccentSecondaryBrush", loading);      // loading bar + asset/file selection highlight
+            Set("AccentTertiaryBrush", header);        // section-header text (fixed across light/dark)
         }
 
         private void ApplyChrome()
@@ -98,8 +101,6 @@ namespace RaxicoreEditor.Editor.Theming
                 SetColor("TitleBarBlueColor", 0xFF172554);
                 SetColor("TitleBarPurpleColor", 0xFF2E1065);
                 SetColor("TitleBarRedColor", 0xFF450A0A);
-                // Light shadow behind accent-coloured text in dark mode.
-                SetColor("AccentTextShadowColor", 0x99FFFFFF);
             }
             else
             {
@@ -122,8 +123,6 @@ namespace RaxicoreEditor.Editor.Theming
                 SetColor("TitleBarBlueColor", 0xFFDBEAFE);
                 SetColor("TitleBarPurpleColor", 0xFFEDE9FE);
                 SetColor("TitleBarRedColor", 0xFFFEE2E2);
-                // Dark shadow behind accent-coloured text in light mode.
-                SetColor("AccentTextShadowColor", 0x99000000);
             }
         }
 

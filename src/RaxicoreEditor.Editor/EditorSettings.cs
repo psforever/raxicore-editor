@@ -13,6 +13,9 @@ namespace RaxicoreEditor.Editor
         /// <summary>Selected status-bar theme name: Tradition | Liberty | Technology | Disruption.</summary>
         public string StatusBarTheme { get; set; } = "Technology";
 
+        /// <summary>Selected model detail tier: Detailed | Low.</summary>
+        public string ModelDetail { get; set; } = "Detailed";
+
         private static string SettingsDir =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RaxicoreEditor");
 

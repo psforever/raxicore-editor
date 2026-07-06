@@ -23,6 +23,8 @@ namespace RaxicoreEditor.Editor
             Settings = EditorSettings.Load();
             Themes.SetStatusBarTheme(
                 Enum.TryParse(Settings.StatusBarTheme, out StatusBarTheme saved) ? saved : StatusBarTheme.Technology);
+            RenderSettings.Detail =
+                Enum.TryParse(Settings.ModelDetail, out ModelDetail detail) ? detail : ModelDetail.Detailed;
         }
 
         public override void OnFrameworkInitializationCompleted()
