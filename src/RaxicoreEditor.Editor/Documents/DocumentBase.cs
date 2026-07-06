@@ -12,6 +12,7 @@ namespace RaxicoreEditor.Editor.Documents
         Surface,
         Animation,
         Database,
+        Audio,
         Unknown,
     }
 

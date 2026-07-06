@@ -11,6 +11,8 @@ unencumbered. No copyleft (GPL/LGPL) dependencies are used.
 | [Inter typeface](https://github.com/rsms/inter) (bundled via `Avalonia.Fonts.Inter`) | UI font | SIL Open Font License 1.1 |
 | [ShadUI](https://github.com/accntech/shad-ui) (`ShadUI`) | shadcn-style theme + window chrome (default UI theme) | MIT |
 | [Silk.NET](https://github.com/dotnet/Silk.NET) (`Silk.NET.Vulkan`, `Silk.NET.Core`) | Vulkan bindings for the offscreen 3D viewport | MIT |
+| [SoundFlow](https://github.com/LSXPrime/SoundFlow) (`SoundFlow`) | Cross-platform WAV playback in the audio tabs | MIT |
+| [miniaudio](https://github.com/mackron/miniaudio) (bundled native backend of `SoundFlow`) | Audio device I/O + decoding (Windows/macOS/Linux) | Public domain (Unlicense) or MIT-0 |
 | [Orbitron](https://github.com/theleagueof/orbitron) (`docs/assets/fonts/Orbitron-Variable.woff2`) | Documentation site display/heading font | SIL Open Font License 1.1 |
 | [Exo 2](https://github.com/googlefonts/Exo-2.0) (`docs/assets/fonts/Exo2-Variable.woff2`) | Documentation site body font | SIL Open Font License 1.1 |
 | [Share Tech Mono](https://fonts.google.com/specimen/Share+Tech+Mono) (`docs/assets/fonts/ShareTechMono-Regular.woff2`) | Documentation site monospace/code font | SIL Open Font License 1.1 |

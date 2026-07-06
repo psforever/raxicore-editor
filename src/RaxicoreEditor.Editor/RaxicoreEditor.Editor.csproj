@@ -29,6 +29,9 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
     <PackageReference Include="ShadUI" Version="0.2.3" />
     <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
+    <!-- Cross-platform WAV playback (Windows/macOS/Linux). MIT; its native backend is miniaudio
+         (public domain / MIT-0). Bundles per-RID native binaries, so no build tooling is needed. -->
+    <PackageReference Include="SoundFlow" Version="1.4.0" />
   </ItemGroup>
 
   <ItemGroup>
