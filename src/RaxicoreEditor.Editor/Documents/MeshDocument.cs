@@ -169,6 +169,7 @@ namespace RaxicoreEditor.Editor.Documents
                 _selectedPart = isContinent ? Parts[0] : (FirstAnimatablePart() ?? Parts[0]);
                 RebuildMaterials();
             }
+            RefreshFilteredParts();
 
             // The clip database usually sits beside the model; the viewport auto-loads it (cached).
             if (!string.IsNullOrEmpty(assetDir))
@@ -194,6 +195,52 @@ namespace RaxicoreEditor.Editor.Documents
         }
 
         public ObservableCollection<MeshPart> Parts { get; } = new();
+
+        private string _meshFilter = "";
+        /// <summary>Filters <see cref="FilteredParts"/> by name substring (the MESHES search box).</summary>
+        public string MeshFilter
+        {
+            get => _meshFilter;
+            set { if (SetProperty(ref _meshFilter, value)) RefreshFilteredParts(); }
+        }
+
+        /// <summary>The mesh-part shortlist shown in the picker — all <see cref="Parts"/>, filtered by
+        /// <see cref="MeshFilter"/>. The list binds to this so the selection still drives the viewport.</summary>
+        public ObservableCollection<MeshPart> FilteredParts { get; } = new();
+
+        private void RefreshFilteredParts()
+        {
+            // Build the desired set in Parts order: everything matching the filter, plus the selected part
+            // even if it doesn't match — so typing in the search box never yanks the active mesh out from
+            // under the viewport (the list's selection is two-way bound to SelectedPart).
+            var target = new List<MeshPart>();
+            foreach (MeshPart p in Parts)
+            {
+                bool matches = _meshFilter.Length == 0 ||
+                               p.Name.Contains(_meshFilter, StringComparison.OrdinalIgnoreCase);
+                if (matches || ReferenceEquals(p, _selectedPart))
+                {
+                    target.Add(p);
+                }
+            }
+
+            // Sync FilteredParts to target in place (never a full Clear) so the selected container — and
+            // thus the ListBox selection — survives the update. Both lists follow Parts order.
+            for (int i = FilteredParts.Count - 1; i >= 0; i--)
+            {
+                if (!target.Contains(FilteredParts[i]))
+                {
+                    FilteredParts.RemoveAt(i);
+                }
+            }
+            for (int i = 0; i < target.Count; i++)
+            {
+                if (i >= FilteredParts.Count || !ReferenceEquals(FilteredParts[i], target[i]))
+                {
+                    FilteredParts.Insert(i, target[i]);
+                }
+            }
+        }
 
         public MeshPart? SelectedPart
         {
@@ -702,6 +749,26 @@ namespace RaxicoreEditor.Editor.Documents
         /// enables the mesh-name↔bone-name rigid-attachment skin encoding (for animation); pass false for
         /// static instances (continent scene objects).
         /// </summary>
+        // Choose which LOD tier of a system to build, keyed on the render setting. The engine tags each
+        // mesh with a LOD value: 14 is the near/detail tier (by far the most common), 36 a coarser LOD,
+        // 1001+ billboard impostors, and a rare 0 is a crude paging base. "Detailed" picks the near tier
+        // (14 when present, else the smallest value); "Low" picks the coarsest. Returns null for a system
+        // with no meshes (nothing to filter).
+        private static uint? SelectLodTier(UberModel.MeshSystem sys)
+        {
+            uint? min = null, max = null;
+            bool has14 = false;
+            foreach (UberModel.Mesh m in sys.Meshes)
+            {
+                if (m.Lod == 14) has14 = true;
+                if (min is null || m.Lod < min) min = m.Lod;
+                if (max is null || m.Lod > max) max = m.Lod;
+            }
+            if (min is null) return null;
+            if (RenderSettings.Detail == ModelDetail.Low) return max;
+            return has14 ? 14u : min;
+        }
+
         private List<MeshSubmesh> BuildSystemSubmeshes(UberModel.MeshSystem sys, Vector3 worldOffset,
             TextureProvider textures, bool allowRigid, out int sectionsAdded)
         {
@@ -716,9 +783,19 @@ namespace RaxicoreEditor.Editor.Documents
                 }
             }
 
+            // A CMeshSystem ships several LOD tiers (the near/detail meshes plus coarser distance LODs and
+            // billboard impostors). Drawing them all at once stacks overlapping shells — z-fighting and, for
+            // translucent parts, a "whispy" look. Pick a single tier per the render setting so exactly one
+            // renders.
+            uint? lodTier = SelectLodTier(sys);
+
             var byMaterial = new Dictionary<string, Builder>(StringComparer.OrdinalIgnoreCase);
             foreach (UberModel.Mesh mesh in sys.Meshes)
             {
+                if (lodTier.HasValue && mesh.Lod != lodTier.Value)
+                {
+                    continue;
+                }
                 int meshBone = boneByName.TryGetValue(mesh.Name, out int mb) ? mb : -1;
                 foreach (UberModel.MeshSection section in mesh.Sections)
                 {
@@ -821,77 +898,239 @@ namespace RaxicoreEditor.Editor.Documents
         private void AppendContinentObjects(string assetDir, string stem)
         {
             if (_textures == null) return;
-            string pakPath = Path.Combine(assetDir, "maps", "map_resources.pak");
             string uberPath = Path.Combine(assetDir, "uber.ubr");
-            if (!File.Exists(pakPath) || !File.Exists(uberPath)) return;
+            if (!File.Exists(uberPath)) return;
 
+            // Continent scene data lives in maps/map_resources.pak for the main continents and sanctuaries,
+            // but the battle islands (map96–99) ship theirs separately under
+            // patchmap/<stem>/<stem>_resources.pak. ResolveResourcePak returns whichever pak actually holds
+            // this continent's contents.
+            string contentsEntry = "contents_" + stem + ".mpo";
+            PakArchive pak;
             MpoFile mpo;
             try
             {
-                PakArchive pak = PakArchive.Load(File.ReadAllBytes(pakPath));
-                string entry = "contents_" + stem + ".mpo";
-                if (pak.IndexOf(entry) < 0) return;
-                mpo = MpoFile.Parse(pak.Extract(entry));
+                PakArchive? found = ResolveResourcePak(assetDir, stem, contentsEntry);
+                if (found == null) return;
+                pak = found;
+                mpo = MpoFile.Parse(pak.Extract(contentsEntry));
             }
             catch { return; }
-            if (mpo.Objects.Count == 0) return;
 
             UberModel lib;
             try { lib = LoadUberCached(uberPath); }
             catch { return; }
 
-            const int maxInstances = 600;          // keep submesh/draw-call count bounded
-            const long vertBudget = 4_000_000;     // ~128 MB of baked object geometry
+            // A full continent places its contents (facilities/towers/bridges/warpgates) plus a large
+            // groundcover layer (flora + a few scattered structures) — map03 is ~1.5k contents and ~16k
+            // groundcover. These ceilings fit that with headroom; anything past them is dropped (and
+            // counted) so the open still succeeds instead of failing.
+            const int maxInstances = 60000;
+            const long vertBudget = 40_000_000;
             var baseCache = new Dictionary<string, List<MeshSubmesh>>(StringComparer.OrdinalIgnoreCase);
-            var objSubs = new List<MeshSubmesh>();
             long vertCount = 0;
             int placed = 0, skipped = 0, missing = 0;
 
-            foreach (MapObject obj in mpo.Objects)
+            // Build (and cache) a record's base submeshes once, reused across all its instances. Records are
+            // resolved across the stacked model libraries (uber.ubr + the patch/expansion .ubr files), since
+            // patch-added assets — warpgate_small, hst, bfr_building, repair_silo, most flora — aren't in uber.
+            List<MeshSubmesh> GetSubs(string recordName)
             {
-                if (string.IsNullOrEmpty(obj.Name)) continue;
-                if (placed >= maxInstances) { skipped++; continue; }
-
-                if (!baseCache.TryGetValue(obj.Name, out List<MeshSubmesh>? baseSubs))
+                if (!baseCache.TryGetValue(recordName, out List<MeshSubmesh>? subs))
                 {
-                    UberModel.MeshSystem? osys = lib.FetchMeshSystem(obj.Name);
-                    baseSubs = osys != null
-                        ? BuildSystemSubmeshes(osys, Vector3.Zero, _textures, allowRigid: false, out _)
+                    UberModel.MeshSystem? sysN = ResolveMeshSystem(assetDir, lib, VisualRecordName(recordName));
+                    subs = sysN != null
+                        ? BuildSystemSubmeshes(sysN, Vector3.Zero, _textures, allowRigid: false, out _)
                         : new List<MeshSubmesh>();
-                    baseCache[obj.Name] = baseSubs;
+                    baseCache[recordName] = subs;
                 }
-                if (baseSubs.Count == 0) { missing++; continue; }
-
-                long instVerts = 0;
-                foreach (MeshSubmesh bs in baseSubs) instVerts += bs.VertexCount;
-                if (vertCount + instVerts > vertBudget) { skipped++; continue; }
-
-                Matrix4x4 m = InstanceMatrix(obj);
-                foreach (MeshSubmesh bs in baseSubs) objSubs.Add(TransformSubmesh(bs, m));
-                vertCount += instVerts;
-                placed++;
+                return subs;
             }
 
-            if (objSubs.Count == 0) return;
-
-            ComputeBounds(objSubs, out Vector3 omin, out Vector3 omax);
-            Parts.Add(new MeshPart
+            // Place one instance; on success reports its instance matrix (used to hang composite children).
+            bool TryPlace(MapObject obj, List<MeshSubmesh> outList, out Matrix4x4 m)
             {
-                Name = $"Scene objects ({placed})",
-                Submeshes = objSubs,
-                BoundsMin = omin,
-                BoundsMax = omax,
-            });
-            _allSubmeshes.AddRange(objSubs);
+                m = default;
+                if (string.IsNullOrEmpty(obj.Name)) return false;
+                if (placed >= maxInstances) { skipped++; return false; }
+                List<MeshSubmesh> baseSubs = GetSubs(obj.Name);
+                if (baseSubs.Count == 0) { missing++; return false; }
+                long instVerts = 0;
+                foreach (MeshSubmesh bs in baseSubs) instVerts += bs.VertexCount;
+                if (vertCount + instVerts > vertBudget) { skipped++; return false; }
+                m = InstanceMatrix(obj);
+                foreach (MeshSubmesh bs in baseSubs) outList.Add(TransformSubmesh(bs, m));
+                vertCount += instVerts;
+                placed++;
+                return true;
+            }
+
+            // ---- contents_mapNN.mpo : the main placed objects (facilities, towers, bridges, warpgate pads).
+            // A warpgate is the flat "warpgate" pad PLUS three standing arches assembled from warpgate_1.lst,
+            // each piece placed relative to the pad in its own native frame (V⁻¹·N·V carried through the pad
+            // instance m, whose shared V/V⁻¹ cancels).
+            IReadOnlyList<RelativeObject> warpParts = LoadRelativeObjects(pak, "warpgate_1.lst");
+            var objSubs = new List<MeshSubmesh>();
+            foreach (MapObject obj in mpo.Objects)
+            {
+                if (!TryPlace(obj, objSubs, out Matrix4x4 m)) continue;
+
+                if (warpParts.Count > 0 && obj.Name.Equals("warpgate", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (RelativeObject part in warpParts)
+                    {
+                        Matrix4x4 partNative =
+                            Matrix4x4.CreateScale(part.Scale) *
+                            Matrix4x4.CreateRotationZ(part.Yaw) *
+                            Matrix4x4.CreateTranslation(part.Position);
+                        Matrix4x4 pm = ViewBasisInv * partNative * ViewBasis * m;
+                        foreach (MeshSubmesh bs in GetSubs(part.Name)) objSubs.Add(TransformSubmesh(bs, pm));
+                    }
+                }
+            }
+            int contentsPlaced = placed;
+
+            // ---- groundcover_mapNN.lst : flora (trees/rocks) plus scattered structures that aren't in
+            // map_objects — the battle-island warpgate_small/hst gates, sanctuary BFR buildings and repair
+            // silos, etc. Each pse_exactobject is an absolute world placement, same frame as a map_object.
+            var groundSubs = new List<MeshSubmesh>();
+            foreach (ExactObject e in LoadExactObjects(pak, "groundcover_" + stem + ".lst"))
+            {
+                TryPlace(new MapObject(-1, e.Name, e.Position, e.Scale, e.Yaw), groundSubs, out _);
+            }
+            int groundPlaced = placed - contentsPlaced;
+
+            if (objSubs.Count == 0 && groundSubs.Count == 0) return;
+
+            if (objSubs.Count > 0)
+            {
+                ComputeBounds(objSubs, out Vector3 omin, out Vector3 omax);
+                Parts.Add(new MeshPart { Name = $"Scene objects ({contentsPlaced})", Submeshes = objSubs, BoundsMin = omin, BoundsMax = omax });
+                _allSubmeshes.AddRange(objSubs);
+            }
+            if (groundSubs.Count > 0)
+            {
+                ComputeBounds(groundSubs, out Vector3 gmin, out Vector3 gmax);
+                Parts.Add(new MeshPart { Name = $"Groundcover ({groundPlaced})", Submeshes = groundSubs, BoundsMin = gmin, BoundsMax = gmax });
+                _allSubmeshes.AddRange(groundSubs);
+            }
             RebuildAggregate();
 
             string extra = (skipped > 0 ? $", {skipped} skipped (cap)" : "") +
                            (missing > 0 ? $", {missing} unresolved" : "");
-            Summary += $" · {placed} scene objects{extra}";
+            Summary += $" · {contentsPlaced} scene objects, {groundPlaced} groundcover{extra}";
         }
 
-        // Native instance transform (scale → yaw about Z → translate), conjugated into view space so it
-        // applies to the view-space base geometry: M_view = V⁻¹ · N_native · V.
+        // Patch/expansion model libraries, highest precedence first. The client applies patches over the
+        // base uber.ubr; a handful of records (warpgate_small, hst, bfr_building, repair_silo, most flora)
+        // only exist here. Paths are relative to the asset root. Loaded lazily and cached.
+        private static readonly string[] FallbackLibs =
+        {
+            @"patch5\patch5.ubr",
+            @"patch4\patch4.ubr",
+            @"patch3\patch3.ubr",
+            @"patch2\patch2.ubr",
+            @"patch1\patch1.ubr",
+            @"expansion1\expansion1.ubr",
+        };
+
+        // A capitol facility's force-dome shield is placed as its invisible "_physics" collision hull
+        // (material force_dome_phy_tex, which carries no texture and so renders as an opaque white dome).
+        // Substitute the matching visual dome — identical shape and placement, but built from the
+        // translucent energy-shield materials (force_dome_*_inner/_outer, flagged translucent in mat.adb),
+        // which the renderer's blend pass draws as a see-through shield.
+        private static string VisualRecordName(string name)
+        {
+            const string physics = "_physics";
+            if (name.Length > physics.Length &&
+                name.StartsWith("force_dome_", StringComparison.OrdinalIgnoreCase) &&
+                name.EndsWith(physics, StringComparison.OrdinalIgnoreCase))
+            {
+                return name.Substring(0, name.Length - physics.Length);
+            }
+            return name;
+        }
+
+        // Resolve a record's mesh system across the stacked model libraries: uber.ubr first (it holds the
+        // overwhelming majority), then the patch/expansion libraries for the records uber lacks. Missing
+        // libraries are skipped; a name absent everywhere returns null (the caller renders nothing for it).
+        private static UberModel.MeshSystem? ResolveMeshSystem(string assetDir, UberModel uber, string name)
+        {
+            // Groundcover flora is sometimes written with a leading '@' (e.g. "@deserttreeg"); no record
+            // carries that prefix, so the mesh is the same record without it.
+            if (name.Length > 0 && name[0] == '@') name = name.Substring(1);
+
+            UberModel.MeshSystem? sys = uber.FetchMeshSystem(name);
+            if (sys != null) return sys;
+            foreach (string rel in FallbackLibs)
+            {
+                string path = Path.Combine(assetDir, rel);
+                if (!File.Exists(path)) continue;
+                UberModel? extra;
+                try { extra = LoadUberCached(path); }
+                catch { continue; }
+                sys = extra.FetchMeshSystem(name);
+                if (sys != null) return sys;
+            }
+            return null;
+        }
+
+        // Return the resource pak that actually contains this continent's contents entry: the shared
+        // maps/map_resources.pak for main continents + sanctuaries, or patchmap/<stem>/<stem>_resources.pak
+        // for the battle islands (map96–99). Null if neither has it.
+        private static PakArchive? ResolveResourcePak(string assetDir, string stem, string contentsEntry)
+        {
+            string shared = Path.Combine(assetDir, "maps", "map_resources.pak");
+            if (File.Exists(shared))
+            {
+                PakArchive p = PakArchive.Load(File.ReadAllBytes(shared));
+                if (p.IndexOf(contentsEntry) >= 0) return p;
+            }
+            string island = Path.Combine(assetDir, "patchmap", stem, stem + "_resources.pak");
+            if (File.Exists(island))
+            {
+                PakArchive p = PakArchive.Load(File.ReadAllBytes(island));
+                if (p.IndexOf(contentsEntry) >= 0) return p;
+            }
+            return null;
+        }
+
+        // Read a groundcover manifest (pse_exactobject list) from the continent resource pak. Empty if the
+        // entry is absent or unreadable.
+        private static IReadOnlyList<ExactObject> LoadExactObjects(PakArchive pak, string entry)
+        {
+            try
+            {
+                if (pak.IndexOf(entry) < 0)
+                {
+                    return Array.Empty<ExactObject>();
+                }
+                return ExactObjectList.Parse(pak.Extract(entry)).Objects;
+            }
+            catch
+            {
+                return Array.Empty<ExactObject>();
+            }
+        }
+
+        // Read a composite-object definition (pse_relativeobject list) from the continent resource pak.
+        // Returns an empty list if the entry is absent or unreadable — callers just skip the sub-objects.
+        private static IReadOnlyList<RelativeObject> LoadRelativeObjects(PakArchive pak, string entry)
+        {
+            try
+            {
+                if (pak.IndexOf(entry) < 0)
+                {
+                    return Array.Empty<RelativeObject>();
+                }
+                return RelativeObjectList.Parse(pak.Extract(entry)).Objects;
+            }
+            catch
+            {
+                return Array.Empty<RelativeObject>();
+            }
+        }
+
         private static Matrix4x4 InstanceMatrix(MapObject obj)
         {
             Vector3 s = obj.Scale;
@@ -973,6 +1212,91 @@ namespace RaxicoreEditor.Editor.Documents
 
         private static readonly Dictionary<string, AliasTex?> AliasCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly object AliasLock = new();
+
+        private static bool IsForceDomeMaterial(string material) =>
+            material.StartsWith("force_dome_", StringComparison.OrdinalIgnoreCase);
+
+        // True if any texel is below the alpha-test threshold (so it would be discarded by the opaque shader).
+        private static bool HasTransparentTexels(byte[] bgra)
+        {
+            for (int i = 3; i < bgra.Length; i += 4)
+            {
+                if (bgra[i] < 128) return true;
+            }
+            return false;
+        }
+
+        // Decide whether a texture's alpha is a genuine cutout mask (keep the alpha test) versus an opaque
+        // material's team-colour / spec / self-illum mask (must be forced opaque). Cutout masks are bimodal —
+        // a large fraction of texels at each extreme (fully transparent AND fully opaque) with little in the
+        // middle — whereas spec/tint masks are gradients or sit entirely on one side.
+        private static bool IsCutoutAlpha(byte[] bgra)
+        {
+            int n = bgra.Length / 4;
+            if (n == 0) return false;
+            int trans = 0, opaque = 0, extreme = 0;
+            for (int i = 3; i < bgra.Length; i += 4)
+            {
+                byte a = bgra[i];
+                if (a < 128) trans++; else opaque++;
+                if (a < 32 || a > 224) extreme++;
+            }
+            double ft = trans / (double)n, fo = opaque / (double)n, fe = extreme / (double)n;
+            return ft >= 0.15 && fo >= 0.15 && fe >= 0.60;
+        }
+
+        private static readonly Dictionary<byte[], byte[]> OpaqueTexCache =
+            new(ReferenceEqualityComparer.Instance);
+        private static readonly object OpaqueTexLock = new();
+
+        // Clone a texture with every alpha forced to 255 so the opaque shader's alpha test never discards it.
+        // Keyed on the source array so materials sharing a texture share the one opaque copy (and the
+        // renderer's by-reference texture dedup still collapses them to a single GPU upload).
+        private static byte[] ForceOpaqueAlpha(byte[] bgra)
+        {
+            lock (OpaqueTexLock)
+            {
+                if (OpaqueTexCache.TryGetValue(bgra, out byte[]? cached)) return cached;
+            }
+            var outb = (byte[])bgra.Clone();
+            for (int i = 3; i < outb.Length; i += 4) outb[i] = 255;
+            lock (OpaqueTexLock)
+            {
+                OpaqueTexCache[bgra] = outb;
+            }
+            return outb;
+        }
+
+        private static readonly Dictionary<string, AliasTex> ShieldCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly object ShieldLock = new();
+
+        // Re-skin a force-dome texture into a translucent energy-shield look: neutral light-grey RGB (the
+        // game tints the real shield by empire, so we stay generic), and alpha capped to a moderate value
+        // so the dome is see-through — while preserving the outer mask's alpha pattern (its low-alpha
+        // "window" areas stay the most transparent). Cached per material (only a handful of dome materials).
+        private static AliasTex? ResolveShieldTex(string material, DdsImage dds)
+        {
+            lock (ShieldLock)
+            {
+                if (ShieldCache.TryGetValue(material, out AliasTex cached)) return cached;
+            }
+            byte[] src = dds.Bgra;
+            var outb = new byte[src.Length];
+            const byte capAlpha = 110;         // ~43% — visible shell, still clearly see-through
+            const byte b = 210, g = 212, r = 216; // BGRA order: light neutral grey
+            for (int i = 0; i + 3 < src.Length; i += 4)
+            {
+                outb[i] = b; outb[i + 1] = g; outb[i + 2] = r;
+                byte a = src[i + 3];
+                outb[i + 3] = a < capAlpha ? a : capAlpha;
+            }
+            var result = new AliasTex(outb, dds.Width, dds.Height, true);
+            lock (ShieldLock)
+            {
+                ShieldCache[material] = result;
+            }
+            return result;
+        }
 
         private static AliasTex? ResolveMaterialAlias(TextureProvider textures, string material)
         {
@@ -1062,6 +1386,31 @@ namespace RaxicoreEditor.Editor.Documents
                     texH = alias.Height;
                     texName = Material;
                     translucent = alias.Translucent;
+                }
+
+                // Capitol force-dome shields: the visual dome's inner layer (dustplanet) is a fully opaque
+                // texture, so even in the translucent pass it reads as a solid dome. Re-skin force-dome
+                // materials to a neutral white/grey shell with a capped, mask-modulated alpha so the shield
+                // renders see-through (the game tints it by empire — we keep it generic grey).
+                if (dds != null && IsForceDomeMaterial(Material) &&
+                    ResolveShieldTex(Material, dds) is AliasTex shield)
+                {
+                    texBgra = shield.Bgra;
+                    texW = shield.Width;
+                    texH = shield.Height;
+                    texName = Material;
+                    translucent = true;
+                }
+
+                // Alpha-channel discipline. The opaque shader alpha-tests every textured material (needed for
+                // genuine cutouts: foliage, grates, decals). But many opaque materials — vehicle hulls, ammo
+                // boxes — store a team-colour / spec / self-illum mask in the alpha channel, not a cutout, so
+                // the test punches holes and you see straight through them. Keep the alpha only for textures
+                // whose alpha is a real cutout mask (bimodal, big fractions at both 0 and 255); for everything
+                // else force alpha opaque so nothing is discarded.
+                if (!translucent && texBgra != null && HasTransparentTexels(texBgra) && !IsCutoutAlpha(texBgra))
+                {
+                    texBgra = ForceOpaqueAlpha(texBgra);
                 }
                 return new MeshSubmesh
                 {
