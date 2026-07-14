@@ -749,24 +749,81 @@ namespace RaxicoreEditor.Editor.Documents
         /// enables the mesh-name↔bone-name rigid-attachment skin encoding (for animation); pass false for
         /// static instances (continent scene objects).
         /// </summary>
-        // Choose which LOD tier of a system to build, keyed on the render setting. The engine tags each
-        // mesh with a LOD value: 14 is the near/detail tier (by far the most common), 36 a coarser LOD,
-        // 1001+ billboard impostors, and a rare 0 is a crude paging base. "Detailed" picks the near tier
-        // (14 when present, else the smallest value); "Low" picks the coarsest. Returns null for a system
-        // with no meshes (nothing to filter).
-        private static uint? SelectLodTier(UberModel.MeshSystem sys)
+        // A mesh at or above this LOD is a far billboard/impostor (values seen: 1001-1007) — never drawn up
+        // close, so "Detailed" never keeps one.
+        private const uint BillboardLod = 1000;
+
+        // Decide which of a system's meshes to build. A CMeshSystem stores every part of a model at every
+        // LOD as a separate mesh; the mesh.Lod tag alone is unreliable (the exterior shell can be lod 36
+        // while interior rooms are lod 14, or the reverse). The robust signal is the bounding box: meshes
+        // that share (near-)equal bounds are the SAME spatial object at different detail — a LOD chain —
+        // while meshes with distinct bounds are complementary parts (exterior shell, interior floor and
+        // rooms, ramps, attachments) that must ALL be drawn. So group by bbox and keep one mesh per group:
+        // the most detailed (max vertices) for "Detailed", the least for "Low". The tolerance is deliberately
+        // tight so a genuinely flatter interior floor (e.g. a comm station's main deck) is never mistaken for
+        // a shorter exterior LOD and dropped; erring tight can at worst leave one coarse LOD copy overlapping
+        // (minor opaque z-fight) rather than delete a wall. Billboards (lod >= 1000) are dropped outright in
+        // "Detailed" — their flat bounds wouldn't group with the 3-D model, so they'd stick out of it.
+        private static bool[] KeepMeshes(UberModel.MeshSystem sys)
         {
-            uint? min = null, max = null;
-            bool has14 = false;
-            foreach (UberModel.Mesh m in sys.Meshes)
+            int n = sys.Meshes.Count;
+            var keep = new bool[n];
+            if (n == 0) return keep;
+
+            var verts = new int[n];
+            var bmin = new Vector3[n];
+            var bmax = new Vector3[n];
+            for (int i = 0; i < n; i++)
             {
-                if (m.Lod == 14) has14 = true;
-                if (min is null || m.Lod < min) min = m.Lod;
-                if (max is null || m.Lod > max) max = m.Lod;
+                var mn = new Vector3(float.MaxValue);
+                var mx = new Vector3(float.MinValue);
+                int v = 0;
+                foreach (UberModel.MeshSection s in sys.Meshes[i].Sections)
+                {
+                    for (uint k = 0; k < s.VertexCount; k++)
+                    {
+                        Vector3 p = s.Verts[k].Position;
+                        mn = Vector3.Min(mn, p);
+                        mx = Vector3.Max(mx, p);
+                    }
+                    v += (int)s.VertexCount;
+                }
+                verts[i] = v; bmin[i] = mn; bmax[i] = mx;
             }
-            if (min is null) return null;
-            if (RenderSettings.Detail == ModelDetail.Low) return max;
-            return has14 ? 14u : min;
+
+            bool low = RenderSettings.Detail == ModelDetail.Low;
+            var used = new bool[n];
+            for (int i = 0; i < n; i++)
+            {
+                if (used[i]) continue;
+                used[i] = true;
+                bool iElig = low || sys.Meshes[i].Lod < BillboardLod;
+                int best = iElig && verts[i] > 0 ? i : -1;
+                for (int j = i + 1; j < n; j++)
+                {
+                    if (used[j] || !SimilarExtent(bmin[i], bmax[i], bmin[j], bmax[j])) continue;
+                    used[j] = true;
+                    bool jElig = low || sys.Meshes[j].Lod < BillboardLod;
+                    if (!jElig || verts[j] == 0) continue;
+                    if (best < 0 || (low ? verts[j] < verts[best] : verts[j] > verts[best])) best = j;
+                }
+                if (best >= 0) keep[best] = true;
+            }
+            return keep;
+        }
+
+        // Two meshes cover the same spatial object (LOD copies of each other) only when their bounding boxes
+        // coincide closely — within ~6% of the larger extent. Kept tight on purpose: a flatter interior part
+        // nested inside a taller shell must read as distinct, not as a shorter LOD of the shell.
+        private static bool SimilarExtent(Vector3 amin, Vector3 amax, Vector3 bmin, Vector3 bmax)
+        {
+            Vector3 asz = amax - amin, bsz = bmax - bmin;
+            float scale = MathF.Max(MathF.Max(asz.X, asz.Y), MathF.Max(asz.Z,
+                          MathF.Max(bsz.X, MathF.Max(bsz.Y, bsz.Z))));
+            if (scale < 1e-3f) return true;
+            float tol = 0.06f * scale;
+            return MathF.Abs(amin.X - bmin.X) <= tol && MathF.Abs(amin.Y - bmin.Y) <= tol && MathF.Abs(amin.Z - bmin.Z) <= tol
+                && MathF.Abs(amax.X - bmax.X) <= tol && MathF.Abs(amax.Y - bmax.Y) <= tol && MathF.Abs(amax.Z - bmax.Z) <= tol;
         }
 
         private List<MeshSubmesh> BuildSystemSubmeshes(UberModel.MeshSystem sys, Vector3 worldOffset,
@@ -783,19 +840,21 @@ namespace RaxicoreEditor.Editor.Documents
                 }
             }
 
-            // A CMeshSystem ships several LOD tiers (the near/detail meshes plus coarser distance LODs and
-            // billboard impostors). Drawing them all at once stacks overlapping shells — z-fighting and, for
-            // translucent parts, a "whispy" look. Pick a single tier per the render setting so exactly one
-            // renders.
-            uint? lodTier = SelectLodTier(sys);
+            // A CMeshSystem ships every part of its model at every LOD as a separate mesh: exterior shell,
+            // interior rooms, ramps and attachments, each with a chain of decreasing-detail copies plus far
+            // billboards. Drawing them all stacks overlapping shells (z-fighting and, for translucent parts,
+            // a "whispy" look). KeepMeshes groups meshes by bounding box and keeps one per group — the whole
+            // model, every part at its best LOD, with each part's LOD copies and billboards collapsed away.
+            bool[] keepMesh = KeepMeshes(sys);
 
             var byMaterial = new Dictionary<string, Builder>(StringComparer.OrdinalIgnoreCase);
-            foreach (UberModel.Mesh mesh in sys.Meshes)
+            for (int mi = 0; mi < sys.Meshes.Count; mi++)
             {
-                if (lodTier.HasValue && mesh.Lod != lodTier.Value)
+                if (!keepMesh[mi])
                 {
                     continue;
                 }
+                UberModel.Mesh mesh = sys.Meshes[mi];
                 int meshBone = boneByName.TryGetValue(mesh.Name, out int mb) ? mb : -1;
                 foreach (UberModel.MeshSection section in mesh.Sections)
                 {
