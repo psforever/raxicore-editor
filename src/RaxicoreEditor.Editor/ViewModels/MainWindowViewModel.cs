@@ -237,6 +237,7 @@ namespace RaxicoreEditor.Editor.ViewModels
         private List<BrowserNode> BuildCatalogNodes(string root)
         {
             var continents = new BrowserNode("Continents", root + "#continents", BrowserNodeKind.Category);
+            var caverns = new BrowserNode("Caverns", root + "#caverns", BrowserNodeKind.Category);
             var models = new BrowserNode("Models", root + "#models", BrowserNodeKind.Category);
             var anims = new BrowserNode("Animations", root + "#anims", BrowserNodeKind.Category);
             var textures = new BrowserNode("Textures", root + "#tex", BrowserNodeKind.Category);
@@ -262,6 +263,7 @@ namespace RaxicoreEditor.Editor.ViewModels
                 {
                     case ".ubr":
                         if (IsContinentUbr(name)) continents.Children.Add(Leaf(ContinentLabel(name, continentNames), f));
+                        else if (IsCavernUbr(name)) caverns.Children.Add(Leaf(ContinentLabel(name, continentNames), f));
                         else if (name.Contains("anim", StringComparison.OrdinalIgnoreCase)) anims.Children.Add(Leaf(name, f));
                         else models.Children.Add(Leaf(name, f));
                         break;
@@ -314,7 +316,7 @@ namespace RaxicoreEditor.Editor.ViewModels
                 }
             }
 
-            BrowserNode[] cats = { continents, models, anims, textures, surfaces, databases, audio, scripts, archives, other };
+            BrowserNode[] cats = { continents, caverns, models, anims, textures, surfaces, databases, audio, scripts, archives, other };
             var shown = new List<BrowserNode>();
             foreach (BrowserNode cat in cats)
             {
@@ -366,7 +368,8 @@ namespace RaxicoreEditor.Editor.ViewModels
             return node;
         }
 
-        // "map03.ubr" → "map03 (Cyssor)" when the continent name is known, else the raw file name.
+        // "map03.ubr" → "map03 (Cyssor)" / "ugd01.ubr" → "ugd01 (Supai)" when the zone name is known,
+        // else the raw file name.
         private static string ContinentLabel(string fileName, ContinentNames? names)
         {
             string stem = Path.GetFileNameWithoutExtension(fileName);
@@ -375,11 +378,16 @@ namespace RaxicoreEditor.Editor.ViewModels
         }
 
         /// <summary>map01.ubr … map99.ubr are the playable continents (terrain meshes).</summary>
-        private static bool IsContinentUbr(string name)
+        private static bool IsContinentUbr(string name) => IsZoneUbr(name, "map");
+
+        /// <summary>ugd01.ubr … ugd06.ubr are the Core Combat cavern zones (terrain meshes).</summary>
+        private static bool IsCavernUbr(string name) => IsZoneUbr(name, "ugd");
+
+        private static bool IsZoneUbr(string name, string prefix)
         {
             string baseName = Path.GetFileNameWithoutExtension(name);
-            if (!baseName.StartsWith("map", StringComparison.OrdinalIgnoreCase) || baseName.Length <= 3) return false;
-            for (int i = 3; i < baseName.Length; i++)
+            if (!baseName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || baseName.Length <= prefix.Length) return false;
+            for (int i = prefix.Length; i < baseName.Length; i++)
             {
                 if (!char.IsDigit(baseName[i])) return false;
             }

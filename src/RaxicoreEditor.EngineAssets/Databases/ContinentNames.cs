@@ -62,11 +62,21 @@ namespace RaxicoreEditor.EngineAssets.Databases
 
         private void Parse(byte[] data)
         {
-            // "@xp_<stem>_label=<Category>: <Name>" per line.
+            // "@xp_<stem>_label=<Category>: <Name>" per line; plus "@cN=<Name>" for the Core Combat caverns.
             string text = Encoding.UTF8.GetString(data);
             foreach (string raw in text.Split('\n'))
             {
                 string line = raw.Trim();
+                // Cavern zones: "@cN=<name>" (c1=Supai … c6=Drugaskan) names the terrain file ugd0N.
+                if (line.Length > 4 && line[0] == '@' && line[1] == 'c' && char.IsDigit(line[2]) && line[3] == '=')
+                {
+                    string cname = line.Substring(4).Trim();
+                    if (cname.Length > 0)
+                    {
+                        _byStem["ugd0" + line[2]] = cname;
+                    }
+                    continue;
+                }
                 if (!line.StartsWith("@xp_", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;

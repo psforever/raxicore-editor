@@ -873,13 +873,18 @@ namespace RaxicoreEditor.Editor.Documents
         // A continent .ubr is "mapNN.ubr" (NN = digits).
         private static bool IsContinentSource(string source)
         {
-            string f = Path.GetFileNameWithoutExtension(BeforeBang(source)).ToLowerInvariant();
-            if (!f.StartsWith("map") || f.Length <= 3) return false;
-            for (int i = 3; i < f.Length; i++)
+            string file = BeforeBang(source);
+            if (!Path.GetExtension(file).Equals(".ubr", StringComparison.OrdinalIgnoreCase)) return false;
+            string f = Path.GetFileNameWithoutExtension(file).ToLowerInvariant();
+            // Continents are mapNN.ubr; Core Combat caverns are ugdNN.ubr — both are terrain grids that get a
+            // placed scene layer (caverns from groundcover only, see AppendContinentObjects).
+            string? prefix = f.StartsWith("map") ? "map" : f.StartsWith("ugd") ? "ugd" : null;
+            if (prefix is null || f.Length <= prefix.Length) return false;
+            for (int i = prefix.Length; i < f.Length; i++)
             {
                 if (!char.IsDigit(f[i])) return false;
             }
-            return Path.GetExtension(BeforeBang(source)).Equals(".ubr", StringComparison.OrdinalIgnoreCase);
+            return true;
         }
 
         private static string BeforeBang(string source)
@@ -901,21 +906,27 @@ namespace RaxicoreEditor.Editor.Documents
             string uberPath = Path.Combine(assetDir, "uber.ubr");
             if (!File.Exists(uberPath)) return;
 
-            // Continent scene data lives in maps/map_resources.pak for the main continents and sanctuaries,
-            // but the battle islands (map96–99) ship theirs separately under
-            // patchmap/<stem>/<stem>_resources.pak. ResolveResourcePak returns whichever pak actually holds
-            // this continent's contents.
-            string contentsEntry = "contents_" + stem + ".mpo";
+            // Scene data lives in maps/map_resources.pak for the main continents and sanctuaries; the battle
+            // islands (map96–99) ship theirs under patchmap/<stem>/<stem>_resources.pak; the Core Combat
+            // caverns (ugdNN) live in expansion1/expansion1.pak. ResolveResourcePak returns whichever pak
+            // holds this zone's scene (its contents or its groundcover).
             PakArchive pak;
-            MpoFile mpo;
             try
             {
-                PakArchive? found = ResolveResourcePak(assetDir, stem, contentsEntry);
+                PakArchive? found = ResolveResourcePak(assetDir, stem);
                 if (found == null) return;
                 pak = found;
-                mpo = MpoFile.Parse(pak.Extract(contentsEntry));
             }
             catch { return; }
+
+            // The map_objects manifest (facilities/towers/bridges/warpgate pads). Caverns have none — their
+            // whole scene (Vanu modules, crystals, Geowarps, flora) is placed via groundcover instead.
+            MpoFile? mpo = null;
+            string contentsEntry = "contents_" + stem + ".mpo";
+            if (pak.IndexOf(contentsEntry) >= 0)
+            {
+                try { mpo = MpoFile.Parse(pak.Extract(contentsEntry)); } catch { mpo = null; }
+            }
 
             UberModel lib;
             try { lib = LoadUberCached(uberPath); }
@@ -969,22 +980,25 @@ namespace RaxicoreEditor.Editor.Documents
             // A warpgate is the flat "warpgate" pad PLUS three standing arches assembled from warpgate_1.lst,
             // each piece placed relative to the pad in its own native frame (V⁻¹·N·V carried through the pad
             // instance m, whose shared V/V⁻¹ cancels).
-            IReadOnlyList<RelativeObject> warpParts = LoadRelativeObjects(pak, "warpgate_1.lst");
             var objSubs = new List<MeshSubmesh>();
-            foreach (MapObject obj in mpo.Objects)
+            if (mpo != null)
             {
-                if (!TryPlace(obj, objSubs, out Matrix4x4 m)) continue;
-
-                if (warpParts.Count > 0 && obj.Name.Equals("warpgate", StringComparison.OrdinalIgnoreCase))
+                IReadOnlyList<RelativeObject> warpParts = LoadRelativeObjects(pak, "warpgate_1.lst");
+                foreach (MapObject obj in mpo.Objects)
                 {
-                    foreach (RelativeObject part in warpParts)
+                    if (!TryPlace(obj, objSubs, out Matrix4x4 m)) continue;
+
+                    if (warpParts.Count > 0 && obj.Name.Equals("warpgate", StringComparison.OrdinalIgnoreCase))
                     {
-                        Matrix4x4 partNative =
-                            Matrix4x4.CreateScale(part.Scale) *
-                            Matrix4x4.CreateRotationZ(part.Yaw) *
-                            Matrix4x4.CreateTranslation(part.Position);
-                        Matrix4x4 pm = ViewBasisInv * partNative * ViewBasis * m;
-                        foreach (MeshSubmesh bs in GetSubs(part.Name)) objSubs.Add(TransformSubmesh(bs, pm));
+                        foreach (RelativeObject part in warpParts)
+                        {
+                            Matrix4x4 partNative =
+                                Matrix4x4.CreateScale(part.Scale) *
+                                Matrix4x4.CreateRotationZ(part.Yaw) *
+                                Matrix4x4.CreateTranslation(part.Position);
+                            Matrix4x4 pm = ViewBasisInv * partNative * ViewBasis * m;
+                            foreach (MeshSubmesh bs in GetSubs(part.Name)) objSubs.Add(TransformSubmesh(bs, pm));
+                        }
                     }
                 }
             }
@@ -1056,9 +1070,10 @@ namespace RaxicoreEditor.Editor.Documents
         // libraries are skipped; a name absent everywhere returns null (the caller renders nothing for it).
         private static UberModel.MeshSystem? ResolveMeshSystem(string assetDir, UberModel uber, string name)
         {
-            // Groundcover flora is sometimes written with a leading '@' (e.g. "@deserttreeg"); no record
-            // carries that prefix, so the mesh is the same record without it.
-            if (name.Length > 0 && name[0] == '@') name = name.Substring(1);
+            // Groundcover names are sometimes written with a leading '@' or '!' variant marker
+            // (e.g. "@deserttreeg", "!zipline"); no record carries that prefix, so the mesh is the same
+            // record without it.
+            if (name.Length > 0 && (name[0] == '@' || name[0] == '!')) name = name.Substring(1);
 
             UberModel.MeshSystem? sys = uber.FetchMeshSystem(name);
             if (sys != null) return sys;
@@ -1075,22 +1090,28 @@ namespace RaxicoreEditor.Editor.Documents
             return null;
         }
 
-        // Return the resource pak that actually contains this continent's contents entry: the shared
-        // maps/map_resources.pak for main continents + sanctuaries, or patchmap/<stem>/<stem>_resources.pak
-        // for the battle islands (map96–99). Null if neither has it.
-        private static PakArchive? ResolveResourcePak(string assetDir, string stem, string contentsEntry)
+        // Return the resource pak that holds this zone's scene — identified by carrying its contents
+        // (contents_<stem>.mpo) or its groundcover (groundcover_<stem>.lst): the shared
+        // maps/map_resources.pak for main continents + sanctuaries, patchmap/<stem>/<stem>_resources.pak for
+        // the battle islands (map96–99), or expansion1/expansion1.pak for the Core Combat caverns (ugdNN,
+        // which are groundcover-only). Null if none of them has it.
+        private static PakArchive? ResolveResourcePak(string assetDir, string stem)
         {
-            string shared = Path.Combine(assetDir, "maps", "map_resources.pak");
-            if (File.Exists(shared))
+            string contents = "contents_" + stem + ".mpo";
+            string ground = "groundcover_" + stem + ".lst";
+            string[] candidates =
             {
-                PakArchive p = PakArchive.Load(File.ReadAllBytes(shared));
-                if (p.IndexOf(contentsEntry) >= 0) return p;
-            }
-            string island = Path.Combine(assetDir, "patchmap", stem, stem + "_resources.pak");
-            if (File.Exists(island))
+                Path.Combine("maps", "map_resources.pak"),
+                Path.Combine("patchmap", stem, stem + "_resources.pak"),
+                Path.Combine("expansion1", "expansion1.pak"),
+            };
+            foreach (string rel in candidates)
             {
-                PakArchive p = PakArchive.Load(File.ReadAllBytes(island));
-                if (p.IndexOf(contentsEntry) >= 0) return p;
+                string path = Path.Combine(assetDir, rel);
+                if (!File.Exists(path)) continue;
+                PakArchive p;
+                try { p = PakArchive.Load(File.ReadAllBytes(path)); } catch { continue; }
+                if (p.IndexOf(contents) >= 0 || p.IndexOf(ground) >= 0) return p;
             }
             return null;
         }
