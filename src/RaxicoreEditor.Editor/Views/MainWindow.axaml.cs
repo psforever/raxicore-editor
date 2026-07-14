@@ -230,11 +230,15 @@ namespace RaxicoreEditor.Editor.Views
                 }
                 string dir = Path.GetDirectoryName(objPath)!;
                 string baseName = Path.GetFileNameWithoutExtension(objPath);
-                MeshObjExporter.Result r = MeshObjExporter.Build(part, baseName);
-                await File.WriteAllTextAsync(objPath, r.Obj);
-                await File.WriteAllTextAsync(Path.Combine(dir, baseName + ".mtl"), r.Mtl);
+                // Stream to disk (a large part's OBJ text can exceed .NET's ~2 GB single-string cap).
+                IReadOnlyList<MeshObjExporter.TextureSidecar> texList = await Task.Run(() =>
+                {
+                    using var objW = new StreamWriter(objPath, false);
+                    using var mtlW = new StreamWriter(Path.Combine(dir, baseName + ".mtl"), false);
+                    return MeshObjExporter.Write(part, baseName, objW, mtlW);
+                });
                 int pngs = 0;
-                foreach (MeshObjExporter.TextureSidecar tex in r.Textures)
+                foreach (MeshObjExporter.TextureSidecar tex in texList)
                 {
                     try { SavePng(Path.Combine(dir, tex.FileName), tex.Bgra, tex.Width, tex.Height); pngs++; }
                     catch { /* skip an unencodable texture */ }
