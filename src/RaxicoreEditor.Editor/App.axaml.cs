@@ -25,6 +25,7 @@ namespace RaxicoreEditor.Editor
                 Enum.TryParse(Settings.StatusBarTheme, out StatusBarTheme saved) ? saved : StatusBarTheme.Technology);
             RenderSettings.Detail =
                 Enum.TryParse(Settings.ModelDetail, out ModelDetail detail) ? detail : ModelDetail.Detailed;
+            RenderSettings.EngineShading = Settings.EngineShading;
         }
 
         public override void OnFrameworkInitializationCompleted()

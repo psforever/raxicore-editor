@@ -20,5 +20,14 @@ namespace RaxicoreEditor.Editor
     {
         /// <summary>Selected model detail tier. Default: the detailed model (LODs hidden).</summary>
         public static ModelDetail Detail { get; set; } = ModelDetail.Detailed;
+
+        /// <summary>
+        /// When true, the viewport draws with the engine-derived material shaders (GLSL translations of the
+        /// original per-material Cg programs): baked vertex colour × texture for pre-lit geometry, and a
+        /// single-directional per-vertex light for geometry that ships normals — instead of the editor's
+        /// generic hemispheric-lit shader. Off by default. Read by <c>MeshViewportRenderer</c> at draw time
+        /// (a pure pipeline switch — no geometry rebuild needed; the vertex colour is always uploaded).
+        /// </summary>
+        public static bool EngineShading { get; set; } = false;
     }
 }

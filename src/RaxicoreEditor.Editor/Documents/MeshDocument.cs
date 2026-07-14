@@ -44,6 +44,10 @@ namespace RaxicoreEditor.Editor.Documents
     public sealed class MeshSubmesh
     {
         public required float[] Vertices { get; init; } // stride 8: px,py,pz, nx,ny,nz, u,v
+        /// <summary>Baked per-vertex colour (RGBA 0-1, 4 floats per vertex), from the engine's pre-lit
+        /// (<c>Diffuse</c>) vertex stream; null when the section carries no colour (treated as white).
+        /// Consumed only by the engine-derived shader path; the generic shader ignores it.</summary>
+        public float[]? Colors { get; init; }
         public required uint[] Indices { get; init; }
         public required string Material { get; init; }
         public byte[]? TextureBgra { get; internal set; }
@@ -1244,6 +1248,7 @@ namespace RaxicoreEditor.Editor.Documents
             {
                 Material = s.Material,
                 Vertices = dst,
+                Colors = s.Colors, // baked colour is transform-invariant — share the array
                 Indices = s.Indices,
                 TextureBgra = s.TextureBgra,
                 TextureWidth = s.TextureWidth,
@@ -1422,6 +1427,7 @@ namespace RaxicoreEditor.Editor.Documents
             public List<Vector3> Pos { get; } = new();
             public List<Vector3> Norm { get; } = new();
             public List<Vector2> Uv { get; } = new();
+            public List<uint> Col { get; } = new(); // packed baked colour (D3DCOLOR 0xAARRGGBB); 0xFFFFFFFF = white
             public List<uint> Idx { get; } = new();
             public List<byte> SkinA { get; } = new();
             public List<byte> SkinB { get; } = new();
@@ -1446,6 +1452,26 @@ namespace RaxicoreEditor.Editor.Documents
                     verts[o + 3] = normals[i].X; verts[o + 4] = normals[i].Y; verts[o + 5] = normals[i].Z;
                     Vector2 uv = i < Uv.Count ? Uv[i] : default;
                     verts[o + 6] = uv.X; verts[o + 7] = uv.Y;
+                }
+
+                // Baked vertex colour (engine "Diffuse" stream) for the engine-derived shader path. Only
+                // emit an array when some vertex is actually tinted — an all-white section stays null and the
+                // renderer treats it as white, saving 16 bytes/vertex on the (common) untinted geometry.
+                float[]? colors = null;
+                bool anyTint = false;
+                foreach (uint c in Col) { if (c != 0xFFFFFFFFu) { anyTint = true; break; } }
+                if (anyTint)
+                {
+                    colors = new float[pos.Length * 4];
+                    for (int i = 0; i < pos.Length; i++)
+                    {
+                        uint c = i < Col.Count ? Col[i] : 0xFFFFFFFFu; // D3DCOLOR 0xAARRGGBB
+                        int o = i * 4;
+                        colors[o + 0] = ((c >> 16) & 0xFF) / 255f; // R
+                        colors[o + 1] = ((c >> 8) & 0xFF) / 255f;  // G
+                        colors[o + 2] = (c & 0xFF) / 255f;         // B
+                        colors[o + 3] = 1f;                        // A: use texture alpha for cutout, not the baked term
+                    }
                 }
 
                 (DdsImage? dds, string? key) = textures.ResolveNamed(Material);
@@ -1496,6 +1522,7 @@ namespace RaxicoreEditor.Editor.Documents
                 {
                     Material = Material,
                     Vertices = verts,
+                    Colors = colors,
                     Indices = idx,
                     TextureBgra = texBgra,
                     TextureWidth = texW,
@@ -1519,6 +1546,9 @@ namespace RaxicoreEditor.Editor.Documents
                 b.Pos.Add(ToViewSpace(vert.Position + worldOffset));
                 b.Norm.Add(section.HasNormal ? ToViewSpace(vert.Normal) : Vector3.Zero);
                 b.Uv.Add(vert.Uv0);
+                // Pre-lit (Lit-type) sections carry a baked colour and no normal; the rest carry a normal and
+                // no colour — feed white so the engine shader lights them instead of tinting them black.
+                b.Col.Add(section.HasColor ? vert.Diffuse : 0xFFFFFFFFu);
                 if (section.HasSkin)
                 {
                     // True per-vertex skinning (Deform/FatDeform — soldiers).

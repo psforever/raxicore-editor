@@ -31,6 +31,7 @@ namespace RaxicoreEditor.Editor.Views
                 SyncStatusThemeChecks(app.Themes.StatusBar);
             }
             SyncModelDetailChecks(RenderSettings.Detail);
+            EngineShadingItem.IsChecked = RenderSettings.EngineShading;
         }
 
         private async void OnOpenFolder(object? sender, RoutedEventArgs e)
@@ -185,6 +186,22 @@ namespace RaxicoreEditor.Editor.Views
         {
             DetailFullItem.IsChecked = detail == ModelDetail.Detailed;
             DetailLowItem.IsChecked = detail == ModelDetail.Low;
+        }
+
+        private async void OnToggleEngineShading(object? sender, RoutedEventArgs e)
+        {
+            bool on = EngineShadingItem.IsChecked;
+            RenderSettings.EngineShading = on;
+            if (Application.Current is App app)
+            {
+                app.Settings.EngineShading = on;
+                app.Settings.Save();
+            }
+            _vm.Log($"Engine shaders: {(on ? "on" : "off")}. Refreshing open 3D views…");
+            // The colour stream is always uploaded, so this is a pure pipeline swap — but reusing the reload
+            // path is the simplest way to force every open viewport to redraw with the new pipeline.
+            try { await _vm.ReloadMeshDocumentsAsync(); }
+            catch (Exception ex) { _vm.Log("refresh failed: " + ex.Message); }
         }
 
         private async void OnExportObj(object? sender, RoutedEventArgs e)

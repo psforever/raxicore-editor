@@ -81,6 +81,9 @@
           <MenuItem Header="LOD (low detail)" Click="OnDetailLow"
                     ToggleType="Radio" x:Name="DetailLowItem" />
         </MenuItem>
+        <MenuItem Header="Engine shaders" Click="OnToggleEngineShading"
+                  ToggleType="CheckBox" x:Name="EngineShadingItem"
+                  ToolTip.Tip="Render with the engine-derived material shaders (baked vertex lighting × texture) instead of the generic viewer shader." />
       </MenuItem>
     </Menu>
   </shadui:Window.MenuBarContent>

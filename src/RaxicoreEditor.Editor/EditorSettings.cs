@@ -16,6 +16,10 @@ namespace RaxicoreEditor.Editor
         /// <summary>Selected model detail tier: Detailed | Low.</summary>
         public string ModelDetail { get; set; } = "Detailed";
 
+        /// <summary>Whether the viewport draws with the engine-derived material shaders (see
+        /// <see cref="RenderSettings.EngineShading"/>). Off by default.</summary>
+        public bool EngineShading { get; set; } = false;
+
         private static string SettingsDir =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RaxicoreEditor");
 

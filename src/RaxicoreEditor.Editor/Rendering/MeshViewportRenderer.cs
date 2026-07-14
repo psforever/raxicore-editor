@@ -30,6 +30,10 @@ namespace RaxicoreEditor.Editor.Rendering
         // same descriptor layout/push constants/vertex format as the opaque pipeline, so it reuses
         // _pipelineLayout; only the fragment shader and blend/depth-write state differ.
         private Pipeline _blendPipeline;
+        // Engine-derived shading variants (optional, toggled by RenderSettings.EngineShading): same
+        // pipeline layout / vertex format as the opaque + blend pipelines above, only the shaders differ.
+        private Pipeline _enginePipeline;
+        private Pipeline _engineBlendPipeline;
         private Sampler _sampler;
         private CommandBuffer _cmd;
         private Fence _fence;
@@ -81,8 +85,11 @@ namespace RaxicoreEditor.Editor.Rendering
             _dev = ctx.Device;
             CreateRenderPass();
             CreateDescriptorLayoutAndSampler();
-            CreatePipeline();
-            CreateBlendPipeline();
+            CreatePipelineLayout();
+            _pipeline = CreateOpaquePipeline("mesh.vert.spv", "mesh.frag.spv");
+            _blendPipeline = CreateBlendPipeline("mesh.vert.spv", "mesh_blend.frag.spv");
+            _enginePipeline = CreateOpaquePipeline("engine.vert.spv", "engine.frag.spv");
+            _engineBlendPipeline = CreateBlendPipeline("engine.vert.spv", "engine_blend.frag.spv");
             CreateBonePipeline();
             AllocateCommandBuffer();
         }
@@ -128,8 +135,11 @@ namespace RaxicoreEditor.Editor.Rendering
                 {
                     continue;
                 }
+                // Interleave the stride-8 (pos/normal/uv) data with the baked colour into the stride-12
+                // vertex the pipelines expect (colour defaults to white when the submesh carries none).
+                float[] vbData = BuildVertexBuffer(s.Vertices, s.Colors);
                 (Silk.NET.Vulkan.Buffer vbuf, DeviceMemory vmem) =
-                    CreateHostBuffer<float>(s.Vertices, BufferUsageFlags.VertexBufferBit);
+                    CreateHostBuffer<float>(vbData, BufferUsageFlags.VertexBufferBit);
                 (Silk.NET.Vulkan.Buffer ibuf, DeviceMemory imem) =
                     CreateHostBuffer<uint>(s.Indices, BufferUsageFlags.IndexBufferBit);
                 int ti = s.HasTexture && s.TextureBgra != null && texIndex.TryGetValue(s.TextureBgra, out int idx) ? idx : 0;
@@ -144,6 +154,31 @@ namespace RaxicoreEditor.Editor.Rendering
 
         /// <summary>Number of GPU submeshes (1:1 with the list passed to <see cref="SetMesh"/>).</summary>
         public int SubmeshCount => _submeshes.Count;
+
+        // Interleave stride-8 geometry (pos3, normal3, uv2) with stride-4 baked colour (rgba) into the
+        // stride-12 vertex all four mesh pipelines read. Colour defaults to white when none is supplied.
+        private static float[] BuildVertexBuffer(float[] v8, float[]? c4)
+        {
+            int vc = v8.Length / 8;
+            var outp = new float[vc * 12];
+            for (int i = 0; i < vc; i++)
+            {
+                int si = i * 8, di = i * 12;
+                outp[di + 0] = v8[si + 0]; outp[di + 1] = v8[si + 1]; outp[di + 2] = v8[si + 2];
+                outp[di + 3] = v8[si + 3]; outp[di + 4] = v8[si + 4]; outp[di + 5] = v8[si + 5];
+                outp[di + 6] = v8[si + 6]; outp[di + 7] = v8[si + 7];
+                if (c4 != null)
+                {
+                    outp[di + 8] = c4[i * 4 + 0]; outp[di + 9] = c4[i * 4 + 1];
+                    outp[di + 10] = c4[i * 4 + 2]; outp[di + 11] = c4[i * 4 + 3];
+                }
+                else
+                {
+                    outp[di + 8] = 1f; outp[di + 9] = 1f; outp[di + 10] = 1f; outp[di + 11] = 1f;
+                }
+            }
+            return outp;
+        }
 
         /// <summary>
         /// Overwrite a submesh's vertex buffer in place (host-visible, no recreation) — used for per-frame
@@ -161,12 +196,22 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 return;
             }
-            ulong size = (ulong)((long)verts.Length * sizeof(float));
+            // The GPU buffer is stride-12 (geometry + baked colour); the incoming skinned data is stride-8
+            // geometry only. Write the 8 geometry floats of each vertex and leave the 4 colour floats (set at
+            // upload) untouched, so re-skinning a pre-lit part keeps its baked colour.
+            int vc = verts.Length / 8;
+            ulong size = (ulong)((long)vc * 12 * sizeof(float));
             void* mapped = null;
             _vk.MapMemory(_dev, s.Vmem, 0, size, 0, ref mapped);
+            var dst = (float*)mapped;
             fixed (float* src = verts)
             {
-                System.Buffer.MemoryCopy(src, mapped, size, size);
+                for (int i = 0; i < vc; i++)
+                {
+                    float* d = dst + i * 12;
+                    float* sp = src + i * 8;
+                    for (int k = 0; k < 8; k++) d[k] = sp[k];
+                }
             }
             _vk.UnmapMemory(_dev, s.Vmem);
         }
@@ -288,9 +333,12 @@ namespace RaxicoreEditor.Editor.Rendering
                 _vk.CmdPushConstants(_cmd, _pipelineLayout, ShaderStageFlags.VertexBit, 0, 128, push);
                 ulong offset = 0;
 
+                // Engine-derived shading toggle: same layout/vertex format, so it's a pure pipeline swap.
+                bool engine = RenderSettings.EngineShading;
+
                 // Opaque/cutout pass first (depth write on), then translucent overlays (depth write
                 // off) so masks/shields/beams correctly composite over whatever is already drawn.
-                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _pipeline);
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, engine ? _enginePipeline : _pipeline);
                 foreach (GpuSubmesh s in _submeshes)
                 {
                     if (s.Translucent) continue;
@@ -302,7 +350,7 @@ namespace RaxicoreEditor.Editor.Rendering
                     _vk.CmdDrawIndexed(_cmd, s.IndexCount, 1, 0, 0, 0);
                 }
 
-                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _blendPipeline);
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, engine ? _engineBlendPipeline : _blendPipeline);
                 foreach (GpuSubmesh s in _submeshes)
                 {
                     if (!s.Translucent) continue;
@@ -614,12 +662,10 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.FreeCommandBuffers(_dev, _ctx.CommandPool, 1, &cmd);
         }
 
-        private void CreatePipeline()
+        // Shared pipeline layout for all four mesh pipelines (opaque/blend × generic/engine): one texture
+        // sampler (set 0) + a 128-byte vertex push constant (mvp, model).
+        private void CreatePipelineLayout()
         {
-            ShaderModule vs = CreateShader(LoadEmbedded("mesh.vert.spv"));
-            ShaderModule fs = CreateShader(LoadEmbedded("mesh.frag.spv"));
-            byte* entry = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("main");
-
             var pcRange = new PushConstantRange(ShaderStageFlags.VertexBit, 0, 128);
             DescriptorSetLayout layout = _descLayout;
             var plci = new PipelineLayoutCreateInfo
@@ -633,6 +679,15 @@ namespace RaxicoreEditor.Editor.Rendering
             PipelineLayout pipelineLayout;
             VulkanContext.Check(_vk.CreatePipelineLayout(_dev, &plci, null, &pipelineLayout), "PipelineLayout");
             _pipelineLayout = pipelineLayout;
+        }
+
+        // Opaque/cutout mesh pipeline (depth write on, no blend), parameterised by shader so the generic
+        // (mesh.*) and engine-derived (engine.*) variants share one body.
+        private Pipeline CreateOpaquePipeline(string vertSpv, string fragSpv)
+        {
+            ShaderModule vs = CreateShader(LoadEmbedded(vertSpv));
+            ShaderModule fs = CreateShader(LoadEmbedded(fragSpv));
+            byte* entry = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("main");
 
             var stages = stackalloc PipelineShaderStageCreateInfo[2];
             stages[0] = new PipelineShaderStageCreateInfo
@@ -650,17 +705,18 @@ namespace RaxicoreEditor.Editor.Rendering
                 PName = entry,
             };
 
-            var binding = new VertexInputBindingDescription(0, 32, VertexInputRate.Vertex);
-            var attrs = stackalloc VertexInputAttributeDescription[3];
+            var binding = new VertexInputBindingDescription(0, 48, VertexInputRate.Vertex);
+            var attrs = stackalloc VertexInputAttributeDescription[4];
             attrs[0] = new VertexInputAttributeDescription(0, 0, Format.R32G32B32Sfloat, 0);   // pos
             attrs[1] = new VertexInputAttributeDescription(1, 0, Format.R32G32B32Sfloat, 12);  // normal
             attrs[2] = new VertexInputAttributeDescription(2, 0, Format.R32G32Sfloat, 24);     // uv
+            attrs[3] = new VertexInputAttributeDescription(3, 0, Format.R32G32B32A32Sfloat, 32); // baked colour (rgba)
             var vi = new PipelineVertexInputStateCreateInfo
             {
                 SType = StructureType.PipelineVertexInputStateCreateInfo,
                 VertexBindingDescriptionCount = 1,
                 PVertexBindingDescriptions = &binding,
-                VertexAttributeDescriptionCount = 3,
+                VertexAttributeDescriptionCount = 4,
                 PVertexAttributeDescriptions = attrs,
             };
             var ia = new PipelineInputAssemblyStateCreateInfo
@@ -734,11 +790,11 @@ namespace RaxicoreEditor.Editor.Rendering
             Pipeline pipeline;
             VulkanContext.Check(_vk.CreateGraphicsPipelines(_dev, default, 1, &gp, null, &pipeline),
                 "CreateGraphicsPipelines");
-            _pipeline = pipeline;
 
             _vk.DestroyShaderModule(_dev, vs, null);
             _vk.DestroyShaderModule(_dev, fs, null);
             Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
+            return pipeline;
         }
 
         // Translucent overlay pipeline for "mask" materials (shield domes, energy beams, shoreline
@@ -747,10 +803,10 @@ namespace RaxicoreEditor.Editor.Rendering
         // depth-write-off differ), so these overlays composite over the opaque pass instead of either
         // fully replacing it (as a hard alpha-test discard would) or corrupting the depth buffer for
         // whatever's drawn after them.
-        private void CreateBlendPipeline()
+        private Pipeline CreateBlendPipeline(string vertSpv, string fragSpv)
         {
-            ShaderModule vs = CreateShader(LoadEmbedded("mesh.vert.spv"));
-            ShaderModule fs = CreateShader(LoadEmbedded("mesh_blend.frag.spv"));
+            ShaderModule vs = CreateShader(LoadEmbedded(vertSpv));
+            ShaderModule fs = CreateShader(LoadEmbedded(fragSpv));
             byte* entry = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("main");
 
             var stages = stackalloc PipelineShaderStageCreateInfo[2];
@@ -769,17 +825,18 @@ namespace RaxicoreEditor.Editor.Rendering
                 PName = entry,
             };
 
-            var binding = new VertexInputBindingDescription(0, 32, VertexInputRate.Vertex);
-            var attrs = stackalloc VertexInputAttributeDescription[3];
+            var binding = new VertexInputBindingDescription(0, 48, VertexInputRate.Vertex);
+            var attrs = stackalloc VertexInputAttributeDescription[4];
             attrs[0] = new VertexInputAttributeDescription(0, 0, Format.R32G32B32Sfloat, 0);   // pos
             attrs[1] = new VertexInputAttributeDescription(1, 0, Format.R32G32B32Sfloat, 12);  // normal
             attrs[2] = new VertexInputAttributeDescription(2, 0, Format.R32G32Sfloat, 24);     // uv
+            attrs[3] = new VertexInputAttributeDescription(3, 0, Format.R32G32B32A32Sfloat, 32); // baked colour (rgba)
             var vi = new PipelineVertexInputStateCreateInfo
             {
                 SType = StructureType.PipelineVertexInputStateCreateInfo,
                 VertexBindingDescriptionCount = 1,
                 PVertexBindingDescriptions = &binding,
-                VertexAttributeDescriptionCount = 3,
+                VertexAttributeDescriptionCount = 4,
                 PVertexAttributeDescriptions = attrs,
             };
             var ia = new PipelineInputAssemblyStateCreateInfo
@@ -859,11 +916,11 @@ namespace RaxicoreEditor.Editor.Rendering
             Pipeline pipeline;
             VulkanContext.Check(_vk.CreateGraphicsPipelines(_dev, default, 1, &gp, null, &pipeline),
                 "CreateGraphicsPipelines(blend)");
-            _blendPipeline = pipeline;
 
             _vk.DestroyShaderModule(_dev, vs, null);
             _vk.DestroyShaderModule(_dev, fs, null);
             Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
+            return pipeline;
         }
 
         // Minimal line-list pipeline for the optional skeleton overlay: position+color vertices, a
@@ -1181,6 +1238,8 @@ namespace RaxicoreEditor.Editor.Rendering
             if (_fence.Handle != 0) _vk.DestroyFence(_dev, _fence, null);
             if (_pipeline.Handle != 0) _vk.DestroyPipeline(_dev, _pipeline, null);
             if (_blendPipeline.Handle != 0) _vk.DestroyPipeline(_dev, _blendPipeline, null);
+            if (_enginePipeline.Handle != 0) _vk.DestroyPipeline(_dev, _enginePipeline, null);
+            if (_engineBlendPipeline.Handle != 0) _vk.DestroyPipeline(_dev, _engineBlendPipeline, null);
             if (_pipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _pipelineLayout, null);
             if (_bonePipeline.Handle != 0) _vk.DestroyPipeline(_dev, _bonePipeline, null);
             if (_bonePipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _bonePipelineLayout, null);
