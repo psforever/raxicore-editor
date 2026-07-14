@@ -20,6 +20,10 @@ namespace RaxicoreEditor.Editor
         /// <see cref="RenderSettings.EngineShading"/>). Off by default.</summary>
         public bool EngineShading { get; set; } = false;
 
+        /// <summary>Explicit path to a <c>blender</c> executable for .blend export. Empty = auto-detect
+        /// (PATH, then the standard install locations).</summary>
+        public string BlenderPath { get; set; } = "";
+
         private static string SettingsDir =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RaxicoreEditor");
 

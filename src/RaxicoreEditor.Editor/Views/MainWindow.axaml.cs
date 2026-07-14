@@ -251,6 +251,45 @@ namespace RaxicoreEditor.Editor.Views
             }
         }
 
+        private async void OnExportBlend(object? sender, RoutedEventArgs e)
+        {
+            if (_vm.SelectedDocument is not MeshDocument mesh || mesh.SelectedPart is not MeshPart part)
+            {
+                _vm.Log("Export .blend: select a 3D mesh first.");
+                return;
+            }
+            string? overridePath = (Application.Current as App)?.Settings.BlenderPath;
+            string? blender = MeshBlendExporter.FindBlender(overridePath);
+            if (blender is null)
+            {
+                _vm.Log("Export .blend: no Blender install found. Install Blender, or set its path in settings (BlenderPath).");
+                return;
+            }
+            try
+            {
+                IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+                {
+                    Title = "Export mesh as Blender .blend",
+                    SuggestedFileName = part.Name + ".blend",
+                    DefaultExtension = "blend",
+                });
+                string? blendPath = file?.TryGetLocalPath();
+                if (string.IsNullOrEmpty(blendPath))
+                {
+                    return;
+                }
+                _vm.Log($"Exporting '{part.Name}' to Blender via {Path.GetFileName(blender)}…");
+                // Blender runs as a subprocess (a few seconds) — keep it off the UI thread. The exporter's
+                // default PNG encoder is dependency-free and thread-safe.
+                await Task.Run(() => MeshBlendExporter.Export(part, blendPath, blender!));
+                _vm.Log($"Exported Blender file '{part.Name}' ({part.TriangleCount} tris) → {blendPath}");
+            }
+            catch (Exception ex)
+            {
+                _vm.Log(".blend export failed: " + ex.Message);
+            }
+        }
+
         private static void SavePng(string path, byte[] bgra, int w, int h)
         {
             var bmp = new Avalonia.Media.Imaging.WriteableBitmap(

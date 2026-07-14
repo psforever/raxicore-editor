@@ -44,6 +44,10 @@
         <MenuItem Click="OnExportObj">
           <MenuItem.Header><AccessText Text="Export _Mesh as OBJ…" /></MenuItem.Header>
         </MenuItem>
+        <MenuItem Click="OnExportBlend"
+                  ToolTip.Tip="Export the selected mesh to a Blender .blend file (requires a local Blender install).">
+          <MenuItem.Header><AccessText Text="Export Mesh as _Blender (.blend)…" /></MenuItem.Header>
+        </MenuItem>
         <Separator />
         <MenuItem Click="OnExit">
           <MenuItem.Header><AccessText Text="E_xit" /></MenuItem.Header>
