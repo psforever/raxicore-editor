@@ -1,0 +1,72 @@
+name: Build Installer
+
+# Builds the Windows installer. Runs on demand, and on a version tag (v*) it also attaches the
+# installer to the matching GitHub Release. The installer version is read from Directory.Build.props
+# (the single source of truth for the app version), so bumping the version there is all that's needed.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Read app version
+        id: ver
+        shell: pwsh
+        run: |
+          $props = Get-Content Directory.Build.props -Raw
+          $version = [regex]::Match($props, '<VersionPrefix>([^<]+)</VersionPrefix>').Groups[1].Value
+          $display = [regex]::Match($props, '<InformationalVersion>([^<]+)</InformationalVersion>').Groups[1].Value
+          if (-not $version) { throw "VersionPrefix not found in Directory.Build.props" }
+          if (-not $display) { $display = $version }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "display=$display" >> $env:GITHUB_OUTPUT
+          Write-Host "App version: $version ($display)"
+
+      - name: Publish (win-x64, self-contained)
+        run: >
+          dotnet publish src/RaxicoreEditor.Editor/RaxicoreEditor.Editor.csproj
+          -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false
+          -o publish
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          $out = "$env:GITHUB_WORKSPACE\RaxicoreEditor-Setup-${{ steps.ver.outputs.version }}.exe"
+          & $makensis `
+            "/DAPP_VERSION=${{ steps.ver.outputs.version }}" `
+            "/DAPP_VERSION_DISPLAY=${{ steps.ver.outputs.display }}" `
+            "/DSOURCE_DIR=$env:GITHUB_WORKSPACE\publish" `
+            "/DOUTFILE=$out" `
+            installer\raxicore-editor.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RaxicoreEditor-Setup-${{ steps.ver.outputs.version }}
+          path: RaxicoreEditor-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Attach to release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: RaxicoreEditor-Setup-*.exe

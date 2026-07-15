@@ -1,0 +1,84 @@
+name: Build Platforms
+
+# Publishes self-contained, single-folder builds for every supported target — Windows, macOS, and Linux,
+# on both x64 and ARM64 — and uploads each as an archive. On a version tag (v*) the archives are also
+# attached to the matching GitHub Release. ReadyToRun precompiles IL to native at publish time for faster
+# startup (it especially helps ARM64, where JIT warmup is costlier); crossgen2 handles the cross-arch legs.
+# The Windows installer is produced separately by build-installer.yml.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            archive: zip
+          - rid: win-arm64
+            os: windows-latest
+            archive: zip
+          - rid: osx-arm64
+            os: macos-latest       # native Apple silicon runner
+            archive: tar
+          - rid: linux-x64
+            os: ubuntu-latest
+            archive: tar
+          - rid: linux-arm64
+            os: ubuntu-latest       # cross-compiled via crossgen2
+            archive: tar
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Read app version
+        id: ver
+        shell: pwsh
+        run: |
+          $props = Get-Content Directory.Build.props -Raw
+          $version = [regex]::Match($props, '<VersionPrefix>([^<]+)</VersionPrefix>').Groups[1].Value
+          if (-not $version) { throw "VersionPrefix not found" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Publish (${{ matrix.rid }}, self-contained, ReadyToRun)
+        shell: pwsh
+        run: >
+          dotnet publish src/RaxicoreEditor.Editor/RaxicoreEditor.Editor.csproj
+          -c Release -r ${{ matrix.rid }} --self-contained true
+          -p:PublishReadyToRun=true -p:PublishSingleFile=false
+          -o publish/RaxicoreEditor-${{ matrix.rid }}
+
+      - name: Archive (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path publish/RaxicoreEditor-${{ matrix.rid }}/* -DestinationPath RaxicoreEditor-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.zip
+
+      - name: Archive (tar.gz)
+        if: matrix.archive == 'tar'
+        run: tar -czf RaxicoreEditor-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.tar.gz -C publish/RaxicoreEditor-${{ matrix.rid }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RaxicoreEditor-${{ matrix.rid }}
+          path: RaxicoreEditor-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.*
+          if-no-files-found: error
+
+      - name: Attach to release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: RaxicoreEditor-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.*
