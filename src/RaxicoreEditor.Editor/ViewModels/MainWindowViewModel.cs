@@ -104,8 +104,18 @@ namespace RaxicoreEditor.Editor.ViewModels
         public DocumentBase? SelectedDocument
         {
             get => _selectedDocument;
-            set => SetProperty(ref _selectedDocument, value);
+            set
+            {
+                if (SetProperty(ref _selectedDocument, value))
+                {
+                    RaisePropertyChanged(nameof(ActiveDocumentHasSky));
+                }
+            }
         }
+
+        /// <summary>True when the active document is a continent/cavern with a resolvable zone sky — gates
+        /// the visibility of the Render → Sky toggle so it only appears for an applicable zone.</summary>
+        public bool ActiveDocumentHasSky => _selectedDocument is MeshDocument m && m.HasSky;
 
         public BrowserNode? SelectedNode
         {

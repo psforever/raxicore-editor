@@ -50,6 +50,12 @@
     <EmbeddedResource Include="Rendering/Shaders/mesh_blend.frag.spv">
       <LogicalName>mesh_blend.frag.spv</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Rendering/Shaders/sky.vert.spv">
+      <LogicalName>sky.vert.spv</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Rendering/Shaders/sky.frag.spv">
+      <LogicalName>sky.frag.spv</LogicalName>
+    </EmbeddedResource>
     <!-- Engine-derived material shaders wired into the optional "engine shading" pipeline. -->
     <EmbeddedResource Include="Rendering/Shaders/EngineDerived/engine.vert.spv">
       <LogicalName>engine.vert.spv</LogicalName>
@@ -69,6 +75,8 @@
     <None Include="Rendering/Shaders/bone.vert" />
     <None Include="Rendering/Shaders/bone.frag" />
     <None Include="Rendering/Shaders/mesh_blend.frag" />
+    <None Include="Rendering/Shaders/sky.vert" />
+    <None Include="Rendering/Shaders/sky.frag" />
   </ItemGroup>
 
   <!-- GLSL translations of the engine-derived reference client's original per-material Cg shaders

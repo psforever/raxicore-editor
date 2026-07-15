@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Numerics;
 using RaxicoreEditor.EngineAssets.Archives;
+using RaxicoreEditor.EngineAssets.Databases;
 using RaxicoreEditor.EngineAssets.Maps;
 using RaxicoreEditor.EngineAssets.Meshes;
 using RaxicoreEditor.EngineAssets.Textures;
@@ -162,8 +163,21 @@ namespace RaxicoreEditor.Editor.Documents
             bool isContinent = IsContinentSource(source) && !string.IsNullOrEmpty(assetDir);
             if (isContinent)
             {
-                try { AppendContinentObjects(assetDir!, Path.GetFileNameWithoutExtension(BeforeBang(source))); }
+                string stem = Path.GetFileNameWithoutExtension(BeforeBang(source));
+                try { AppendContinentObjects(assetDir!, stem); }
                 catch (Exception ex) { Summary += " | scene objects failed: " + ex.Message; }
+                // The zone's sky: atmosphere colours + the sky-dome panorama key, from its engine lighting
+                // cycle. Decode the panorama here so the viewport can upload it when the sky toggle is on.
+                try
+                {
+                    _sky = SkyDatabase.TryLoad(assetDir)?.ForZone(stem);
+                    if (_sky is SkyDatabase.SkyLight sl && !string.IsNullOrEmpty(sl.Texture))
+                    {
+                        DdsImage? dds = GetTextureProvider(assetDir).Get(sl.Texture);
+                        if (dds != null) { _skyTexBgra = dds.Bgra; _skyTexW = dds.Width; _skyTexH = dds.Height; }
+                    }
+                }
+                catch { _sky = null; }
             }
 
             if (Parts.Count > 0)
@@ -265,6 +279,20 @@ namespace RaxicoreEditor.Editor.Documents
                 }
             }
         }
+
+        // The zone's sky atmosphere + decoded panorama (continents/caverns only); null/empty otherwise.
+        private readonly SkyDatabase.SkyLight? _sky;
+        private readonly byte[]? _skyTexBgra;
+        private readonly int _skyTexW, _skyTexH;
+        /// <summary>The decoded equirectangular sky panorama (BGRA) for this zone, or null.</summary>
+        public byte[]? SkyTextureBgra => _skyTexBgra;
+        public int SkyTextureWidth => _skyTexW;
+        public int SkyTextureHeight => _skyTexH;
+        /// <summary>This document's zone sky parameters, or null if it has none (models, or a zone whose
+        /// atmosphere didn't resolve). Drives the viewport's optional sky and the Render-menu Sky toggle.</summary>
+        public SkyDatabase.SkyLight? Sky => _sky;
+        /// <summary>True when this document has a resolvable zone sky (an "applicable continent").</summary>
+        public bool HasSky => _sky != null;
 
         public IReadOnlyList<MeshSubmesh> Submeshes => _selectedPart?.Submeshes ?? Array.Empty<MeshSubmesh>();
         public Vector3 BoundsMin => _selectedPart?.BoundsMin ?? Vector3.Zero;

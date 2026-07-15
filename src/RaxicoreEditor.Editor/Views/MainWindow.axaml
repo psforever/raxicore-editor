@@ -88,6 +88,10 @@
         <MenuItem Header="Engine shaders" Click="OnToggleEngineShading"
                   ToggleType="CheckBox" x:Name="EngineShadingItem"
                   ToolTip.Tip="Render with the engine-derived material shaders (baked vertex lighting × texture) instead of the generic viewer shader." />
+        <MenuItem Header="Sky" Click="OnToggleSky"
+                  ToggleType="CheckBox" x:Name="SkyItem"
+                  IsVisible="{Binding ActiveDocumentHasSky}"
+                  ToolTip.Tip="Draw this continent's procedural sky (horizon/sky/sun from its engine lighting cycle) behind the scene." />
       </MenuItem>
     </Menu>
   </shadui:Window.MenuBarContent>

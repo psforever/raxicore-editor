@@ -1,3 +1,5 @@
+using System;
+
 namespace RaxicoreEditor.Editor
 {
     /// <summary>Which level-of-detail tier of a model to build/render.</summary>
@@ -29,5 +31,17 @@ namespace RaxicoreEditor.Editor
         /// (a pure pipeline switch — no geometry rebuild needed; the vertex colour is always uploaded).
         /// </summary>
         public static bool EngineShading { get; set; } = false;
+
+        /// <summary>When true, continents/caverns draw their procedural sky (horizon→zenith gradient + sun,
+        /// from the zone's engine lighting cycle) behind the scene instead of the flat clear colour. Read by
+        /// the viewport each frame; toggling raises <see cref="Changed"/> for a lightweight re-render.</summary>
+        public static bool Sky { get; set; } = false;
+
+        /// <summary>Raised when a per-frame render setting changes (e.g. the sky toggle) so open viewports can
+        /// redraw without rebuilding geometry.</summary>
+        public static event Action? Changed;
+
+        /// <summary>Notify viewports that a per-frame render setting changed.</summary>
+        public static void RaiseChanged() => Changed?.Invoke();
     }
 }

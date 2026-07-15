@@ -32,6 +32,20 @@ namespace RaxicoreEditor.Editor.Views
             }
             SyncModelDetailChecks(RenderSettings.Detail);
             EngineShadingItem.IsChecked = RenderSettings.EngineShading;
+            SkyItem.IsChecked = RenderSettings.Sky;
+        }
+
+        private void OnToggleSky(object? sender, RoutedEventArgs e)
+        {
+            RenderSettings.Sky = SkyItem.IsChecked;
+            if (Application.Current is App app)
+            {
+                app.Settings.Sky = RenderSettings.Sky;
+                app.Settings.Save();
+            }
+            // Per-frame render setting — no geometry rebuild, just nudge open viewports to redraw.
+            RenderSettings.RaiseChanged();
+            _vm.Log($"Sky: {(RenderSettings.Sky ? "on" : "off")}.");
         }
 
         private async void OnOpenFolder(object? sender, RoutedEventArgs e)

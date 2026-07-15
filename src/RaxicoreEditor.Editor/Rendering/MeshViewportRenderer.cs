@@ -34,6 +34,20 @@ namespace RaxicoreEditor.Editor.Rendering
         // pipeline layout / vertex format as the opaque + blend pipelines above, only the shaders differ.
         private Pipeline _enginePipeline;
         private Pipeline _engineBlendPipeline;
+        // Procedural sky background (optional): a fullscreen pass drawn before the mesh, with its own layout
+        // (no descriptor set; a 128-byte fragment push constant) — no vertex buffer, depth off.
+        private Pipeline _skyPipeline;
+        private PipelineLayout _skyPipelineLayout;
+        private bool _skyEnabled;
+        private Matrix4x4 _skyRayVp = Matrix4x4.Identity;
+        private Vector4 _skyTint = new(1, 1, 1, 1);
+        private Vector4 _skyHorizon; // zone atmosphere/fog colour for the below-horizon falloff
+        // The sky panorama texture + its own persistent descriptor (independent of the per-mesh pool, which
+        // is rebuilt on every SetMesh). _skyHasTex gates the sky pass until a texture is uploaded.
+        private GpuTexture _skyTex;
+        private DescriptorPool _skyDescPool;
+        private DescriptorSet _skyDescSet;
+        private bool _skyHasTex;
         private Sampler _sampler;
         private CommandBuffer _cmd;
         private Fence _fence;
@@ -90,6 +104,7 @@ namespace RaxicoreEditor.Editor.Rendering
             _blendPipeline = CreateBlendPipeline("mesh.vert.spv", "mesh_blend.frag.spv");
             _enginePipeline = CreateOpaquePipeline("engine.vert.spv", "engine.frag.spv");
             _engineBlendPipeline = CreateBlendPipeline("engine.vert.spv", "engine_blend.frag.spv");
+            CreateSkyPipeline();
             CreateBonePipeline();
             AllocateCommandBuffer();
         }
@@ -216,6 +231,49 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.UnmapMemory(_dev, s.Vmem);
         }
 
+        /// <summary>
+        /// Set the sky for the next frame. <paramref name="rayVp"/> is the inverse of the translation-stripped
+        /// view-projection (maps NDC to a world ray direction); <paramref name="tint"/> multiplies the sampled
+        /// panorama (0-1 RGB, from the zone's ambient mood). The sky only draws when enabled AND a panorama has
+        /// been uploaded via <see cref="SetSkyTexture"/>.
+        /// </summary>
+        public void SetSky(bool enabled, Matrix4x4 rayVp, Vector3 tint, Vector3 horizon)
+        {
+            _skyEnabled = enabled;
+            _skyRayVp = rayVp;
+            _skyTint = new Vector4(tint, 1f);
+            _skyHorizon = new Vector4(horizon, 0f);
+        }
+
+        /// <summary>Upload the zone's equirectangular sky panorama (BGRA). Replaces any previous one; safe to
+        /// call between frames (Render is synchronous). Pass a null/empty buffer to clear it.</summary>
+        public void SetSkyTexture(byte[]? bgra, int w, int h)
+        {
+            _vk.DeviceWaitIdle(_dev);
+            if (_skyTex.Image.Handle != 0)
+            {
+                _vk.DestroyImageView(_dev, _skyTex.View, null);
+                _vk.DestroyImage(_dev, _skyTex.Image, null);
+                _vk.FreeMemory(_dev, _skyTex.Mem, null);
+                _skyTex = default;
+            }
+            _skyHasTex = false;
+            if (bgra == null || bgra.Length < w * h * 4 || w <= 0 || h <= 0)
+            {
+                return;
+            }
+            _skyTex = CreateTexture(bgra, w, h);
+            var imageInfo = new DescriptorImageInfo { Sampler = _sampler, ImageView = _skyTex.View, ImageLayout = ImageLayout.ShaderReadOnlyOptimal };
+            var write = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = _skyDescSet, DstBinding = 0, DstArrayElement = 0,
+                DescriptorType = DescriptorType.CombinedImageSampler, DescriptorCount = 1, PImageInfo = &imageInfo,
+            };
+            _vk.UpdateDescriptorSets(_dev, 1, &write, 0, null);
+            _skyHasTex = true;
+        }
+
         // ---- skeleton overlay ------------------------------------------------------------------
 
         /// <summary>
@@ -324,6 +382,20 @@ namespace RaxicoreEditor.Editor.Rendering
             var scissor = new Rect2D(new Offset2D(0, 0), new Extent2D((uint)_width, (uint)_height));
             _vk.CmdSetViewport(_cmd, 0, 1, &viewport);
             _vk.CmdSetScissor(_cmd, 0, 1, &scissor);
+
+            // Textured sky first (fills the background), then the mesh draws over it with its own depth.
+            if (_skyEnabled && _skyHasTex)
+            {
+                var skyPush = stackalloc float[24]; // mat4 (16) + vec4 tint (4) + vec4 horizon (4)
+                CopyMatrix(_skyRayVp, skyPush);
+                skyPush[16] = _skyTint.X; skyPush[17] = _skyTint.Y; skyPush[18] = _skyTint.Z; skyPush[19] = _skyTint.W;
+                skyPush[20] = _skyHorizon.X; skyPush[21] = _skyHorizon.Y; skyPush[22] = _skyHorizon.Z; skyPush[23] = _skyHorizon.W;
+                DescriptorSet sset = _skyDescSet;
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _skyPipeline);
+                _vk.CmdBindDescriptorSets(_cmd, PipelineBindPoint.Graphics, _skyPipelineLayout, 0, 1, &sset, 0, null);
+                _vk.CmdPushConstants(_cmd, _skyPipelineLayout, ShaderStageFlags.FragmentBit, 0, 96, skyPush);
+                _vk.CmdDraw(_cmd, 3, 1, 0, 0);
+            }
 
             if (_submeshes.Count > 0)
             {
@@ -923,6 +995,74 @@ namespace RaxicoreEditor.Editor.Rendering
             return pipeline;
         }
 
+        // Procedural sky pipeline: a fullscreen triangle (no vertex buffer — corners from gl_VertexIndex),
+        // a 128-byte fragment push constant (inverse ray view-proj + colours), no descriptor sets, depth
+        // test/write off (it fills the background before the mesh draws over it).
+        private void CreateSkyPipeline()
+        {
+            ShaderModule vs = CreateShader(LoadEmbedded("sky.vert.spv"));
+            ShaderModule fs = CreateShader(LoadEmbedded("sky.frag.spv"));
+            byte* entry = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("main");
+
+            var pcRange = new PushConstantRange(ShaderStageFlags.FragmentBit, 0, 96); // mat4 invRayVp + vec4 tint + vec4 horizon
+            DescriptorSetLayout descLayout = _descLayout;                            // one combined-image-sampler
+            var plci = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+                SetLayoutCount = 1,
+                PSetLayouts = &descLayout,
+                PushConstantRangeCount = 1,
+                PPushConstantRanges = &pcRange,
+            };
+            PipelineLayout layout;
+            VulkanContext.Check(_vk.CreatePipelineLayout(_dev, &plci, null, &layout), "SkyPipelineLayout");
+            _skyPipelineLayout = layout;
+
+            var stages = stackalloc PipelineShaderStageCreateInfo[2];
+            stages[0] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.VertexBit, Module = vs, PName = entry };
+            stages[1] = new PipelineShaderStageCreateInfo { SType = StructureType.PipelineShaderStageCreateInfo, Stage = ShaderStageFlags.FragmentBit, Module = fs, PName = entry };
+
+            var vi = new PipelineVertexInputStateCreateInfo { SType = StructureType.PipelineVertexInputStateCreateInfo }; // no inputs
+            var ia = new PipelineInputAssemblyStateCreateInfo { SType = StructureType.PipelineInputAssemblyStateCreateInfo, Topology = PrimitiveTopology.TriangleList };
+            var vp = new PipelineViewportStateCreateInfo { SType = StructureType.PipelineViewportStateCreateInfo, ViewportCount = 1, ScissorCount = 1 };
+            var rs = new PipelineRasterizationStateCreateInfo { SType = StructureType.PipelineRasterizationStateCreateInfo, PolygonMode = PolygonMode.Fill, CullMode = CullModeFlags.None, FrontFace = FrontFace.CounterClockwise, LineWidth = 1f };
+            var ms = new PipelineMultisampleStateCreateInfo { SType = StructureType.PipelineMultisampleStateCreateInfo, RasterizationSamples = SampleCountFlags.Count1Bit };
+            var ds = new PipelineDepthStencilStateCreateInfo { SType = StructureType.PipelineDepthStencilStateCreateInfo, DepthTestEnable = false, DepthWriteEnable = false, DepthCompareOp = CompareOp.Always };
+            var cba = new PipelineColorBlendAttachmentState { ColorWriteMask = ColorComponentFlags.RBit | ColorComponentFlags.GBit | ColorComponentFlags.BBit | ColorComponentFlags.ABit, BlendEnable = false };
+            var cb = new PipelineColorBlendStateCreateInfo { SType = StructureType.PipelineColorBlendStateCreateInfo, AttachmentCount = 1, PAttachments = &cba };
+            var dynStates = stackalloc DynamicState[2] { DynamicState.Viewport, DynamicState.Scissor };
+            var dyn = new PipelineDynamicStateCreateInfo { SType = StructureType.PipelineDynamicStateCreateInfo, DynamicStateCount = 2, PDynamicStates = dynStates };
+
+            var gp = new GraphicsPipelineCreateInfo
+            {
+                SType = StructureType.GraphicsPipelineCreateInfo,
+                StageCount = 2, PStages = stages,
+                PVertexInputState = &vi, PInputAssemblyState = &ia, PViewportState = &vp,
+                PRasterizationState = &rs, PMultisampleState = &ms, PDepthStencilState = &ds,
+                PColorBlendState = &cb, PDynamicState = &dyn,
+                Layout = _skyPipelineLayout, RenderPass = _renderPass, Subpass = 0,
+            };
+            Pipeline pipeline;
+            VulkanContext.Check(_vk.CreateGraphicsPipelines(_dev, default, 1, &gp, null, &pipeline), "CreateGraphicsPipelines(sky)");
+            _skyPipeline = pipeline;
+
+            _vk.DestroyShaderModule(_dev, vs, null);
+            _vk.DestroyShaderModule(_dev, fs, null);
+            Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
+
+            // Dedicated descriptor pool + set for the sky panorama, persistent across mesh reloads.
+            var skyPoolSize = new DescriptorPoolSize { Type = DescriptorType.CombinedImageSampler, DescriptorCount = 1 };
+            var skyPci = new DescriptorPoolCreateInfo { SType = StructureType.DescriptorPoolCreateInfo, PoolSizeCount = 1, PPoolSizes = &skyPoolSize, MaxSets = 1 };
+            DescriptorPool skyPool;
+            VulkanContext.Check(_vk.CreateDescriptorPool(_dev, &skyPci, null, &skyPool), "SkyDescriptorPool");
+            _skyDescPool = skyPool;
+            DescriptorSetLayout dl = _descLayout;
+            var sai = new DescriptorSetAllocateInfo { SType = StructureType.DescriptorSetAllocateInfo, DescriptorPool = _skyDescPool, DescriptorSetCount = 1, PSetLayouts = &dl };
+            DescriptorSet skySet;
+            VulkanContext.Check(_vk.AllocateDescriptorSets(_dev, &sai, &skySet), "SkyDescriptorSet");
+            _skyDescSet = skySet;
+        }
+
         // Minimal line-list pipeline for the optional skeleton overlay: position+color vertices, a
         // single mat4 push constant (camera MVP only — bone positions are already fully composed in
         // view-space by SkeletalAnimator), no descriptor sets/textures. Depth-tested against the mesh
@@ -1240,6 +1380,15 @@ namespace RaxicoreEditor.Editor.Rendering
             if (_blendPipeline.Handle != 0) _vk.DestroyPipeline(_dev, _blendPipeline, null);
             if (_enginePipeline.Handle != 0) _vk.DestroyPipeline(_dev, _enginePipeline, null);
             if (_engineBlendPipeline.Handle != 0) _vk.DestroyPipeline(_dev, _engineBlendPipeline, null);
+            if (_skyTex.Image.Handle != 0)
+            {
+                _vk.DestroyImageView(_dev, _skyTex.View, null);
+                _vk.DestroyImage(_dev, _skyTex.Image, null);
+                _vk.FreeMemory(_dev, _skyTex.Mem, null);
+            }
+            if (_skyDescPool.Handle != 0) _vk.DestroyDescriptorPool(_dev, _skyDescPool, null);
+            if (_skyPipeline.Handle != 0) _vk.DestroyPipeline(_dev, _skyPipeline, null);
+            if (_skyPipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _skyPipelineLayout, null);
             if (_pipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _pipelineLayout, null);
             if (_bonePipeline.Handle != 0) _vk.DestroyPipeline(_dev, _bonePipeline, null);
             if (_bonePipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _bonePipelineLayout, null);

@@ -8,6 +8,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
 using RaxicoreEditor.Editor.Documents;
+using RaxicoreEditor.EngineAssets.Databases;
 
 namespace RaxicoreEditor.Editor.Rendering
 {
@@ -133,12 +134,16 @@ namespace RaxicoreEditor.Editor.Rendering
             _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
             _timer.Tick += (_, _) => Tick();
             _timer.Start();
+            RenderSettings.Changed += OnRenderSettingsChanged; // sky toggle → redraw
             _needsRender = true;
         }
+
+        private void OnRenderSettingsChanged() => _needsRender = true;
 
         protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
         {
             base.OnDetachedFromVisualTree(e);
+            RenderSettings.Changed -= OnRenderSettingsChanged;
             if (_doc != null)
             {
                 _doc.GeometryChanged -= OnGeometryChanged;
@@ -161,6 +166,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 return;
             }
             _renderer.SetMesh(_doc.Submeshes);
+            _renderer.SetSkyTexture(_doc.SkyTextureBgra, _doc.SkyTextureWidth, _doc.SkyTextureHeight);
             _camera.Frame(_doc.BoundsMin, _doc.BoundsMax);
             BuildAnimator();
             _needsRender = true;
@@ -379,6 +385,23 @@ namespace RaxicoreEditor.Editor.Rendering
 
             float aspect = (float)pw / ph;
             Matrix4x4 mvp = _camera.View * _camera.Projection(aspect); // model = identity
+
+            // Sky panorama: feed a ray matrix (inverse of the translation-stripped view-projection, so the
+            // shader gets pure view-ray directions for the equirectangular lookup). The panorama itself is
+            // uploaded separately in UploadMesh; the renderer only draws it when a texture is present.
+            if (RenderSettings.Sky && _doc?.Sky is SkyDatabase.SkyLight sky)
+            {
+                Matrix4x4 viewRot = _camera.View;
+                viewRot.M41 = 0; viewRot.M42 = 0; viewRot.M43 = 0;
+                Matrix4x4.Invert(viewRot * _camera.Projection(aspect), out Matrix4x4 invRayVp);
+                // Horizon/fog colour drives the below-horizon procedural falloff (the earlier gradient look).
+                _renderer.SetSky(true, invRayVp, Vector3.One, sky.Horizon);
+            }
+            else
+            {
+                _renderer.SetSky(false, Matrix4x4.Identity, Vector3.One, Vector3.Zero);
+            }
+
             if (_renderer.Render(mvp, Matrix4x4.Identity, _pixels))
             {
                 WritePixels();
