@@ -82,3 +82,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: RaxicoreEditor-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.*
+          # A tag with a pre-release suffix (e.g. v0.1.0-beta) publishes as a GitHub pre-release; a clean
+          # tag (v1.0.0) publishes as a normal release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
