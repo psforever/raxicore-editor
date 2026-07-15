@@ -816,19 +816,29 @@ namespace RaxicoreEditor.Editor.Documents
             return keep;
         }
 
-        // Two meshes cover the same spatial object (LOD copies of each other) only when their bounding boxes
-        // coincide closely — within ~6% of the larger extent. Kept tight on purpose: a flatter interior part
-        // nested inside a taller shell must read as distinct, not as a shorter LOD of the shell.
+        // Two meshes are the same spatial object at different detail (a LOD chain) when they have ~the same
+        // SIZE and ~the same CENTRE, per axis. Comparing size+centre (not absolute min/max) collapses LOD
+        // chains whose simplification shifts/shrinks the box a little — e.g. player models, which ship as a
+        // base mesh plus 01..05 at falling detail, all covering the same figure but with boxes that drift by
+        // ~10-30% and so escaped an absolute-bounds test, leaving several LODs stacked and z-fighting. It
+        // still keeps genuinely distinct parts apart: a facility's flat interior deck differs from its shell
+        // in one axis's SIZE, and its interior rooms sit at different CENTRES.
         private static bool SimilarExtent(Vector3 amin, Vector3 amax, Vector3 bmin, Vector3 bmax)
         {
             Vector3 asz = amax - amin, bsz = bmax - bmin;
-            float scale = MathF.Max(MathF.Max(asz.X, asz.Y), MathF.Max(asz.Z,
-                          MathF.Max(bsz.X, MathF.Max(bsz.Y, bsz.Z))));
-            if (scale < 1e-3f) return true;
-            float tol = 0.06f * scale;
-            return MathF.Abs(amin.X - bmin.X) <= tol && MathF.Abs(amin.Y - bmin.Y) <= tol && MathF.Abs(amin.Z - bmin.Z) <= tol
-                && MathF.Abs(amax.X - bmax.X) <= tol && MathF.Abs(amax.Y - bmax.Y) <= tol && MathF.Abs(amax.Z - bmax.Z) <= tol;
+            Vector3 ac = (amin + amax) * 0.5f, bc = (bmin + bmax) * 0.5f;
+            const float tol = 0.35f;
+            for (int d = 0; d < 3; d++)
+            {
+                float sa = Axis(asz, d), sb = Axis(bsz, d);
+                float big = MathF.Max(MathF.Max(sa, sb), 1e-3f);
+                if (MathF.Abs(sa - sb) > tol * big) return false;                 // sizes differ → different object
+                if (MathF.Abs(Axis(ac, d) - Axis(bc, d)) > tol * big) return false; // centres apart → different object
+            }
+            return true;
         }
+
+        private static float Axis(Vector3 v, int d) => d == 0 ? v.X : d == 1 ? v.Y : v.Z;
 
         private List<MeshSubmesh> BuildSystemSubmeshes(UberModel.MeshSystem sys, Vector3 worldOffset,
             TextureProvider textures, bool allowRigid, out int sectionsAdded)
