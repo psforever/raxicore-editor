@@ -1039,28 +1039,61 @@ namespace RaxicoreEditor.Editor.Documents
             // counted) so the open still succeeds instead of failing.
             const int maxInstances = 60000;
             const long vertBudget = 40_000_000;
-            var baseCache = new Dictionary<string, List<MeshSubmesh>>(StringComparer.OrdinalIgnoreCase);
+            var baseCache = new System.Collections.Concurrent.ConcurrentDictionary<string, List<MeshSubmesh>>(StringComparer.OrdinalIgnoreCase);
             long vertCount = 0;
             int placed = 0, skipped = 0, missing = 0;
 
-            // Build (and cache) a record's base submeshes once, reused across all its instances. Records are
-            // resolved across the stacked model libraries (uber.ubr + the patch/expansion .ubr files), since
-            // patch-added assets — warpgate_small, hst, bfr_building, repair_silo, most flora — aren't in uber.
-            List<MeshSubmesh> GetSubs(string recordName)
+            // Scene sources, materialised once: the map_objects manifest, the groundcover list, and (for
+            // warpgates) the relative arch pieces. Used first to prebuild base meshes, then to place them.
+            IEnumerable<MapObject> mapObjects = mpo?.Objects ?? (IEnumerable<MapObject>)Array.Empty<MapObject>();
+            var groundObjects = new List<ExactObject>(LoadExactObjects(pak, "groundcover_" + stem + ".lst"));
+            bool hasWarp = false;
+            foreach (MapObject o in mapObjects)
             {
-                if (!baseCache.TryGetValue(recordName, out List<MeshSubmesh>? subs))
-                {
-                    UberModel.MeshSystem? sysN = ResolveMeshSystem(assetDir, lib, VisualRecordName(recordName));
-                    subs = sysN != null
-                        ? BuildSystemSubmeshes(sysN, Vector3.Zero, _textures, allowRigid: false, out _)
-                        : new List<MeshSubmesh>();
-                    baseCache[recordName] = subs;
-                }
-                return subs;
+                if (!string.IsNullOrEmpty(o.Name) && o.Name.Equals("warpgate", StringComparison.OrdinalIgnoreCase)) { hasWarp = true; break; }
             }
+            IReadOnlyList<RelativeObject> warpParts = mpo != null && hasWarp
+                ? LoadRelativeObjects(pak, "warpgate_1.lst")
+                : Array.Empty<RelativeObject>();
 
-            // Place one instance; on success reports its instance matrix (used to hang composite children).
-            bool TryPlace(MapObject obj, List<MeshSubmesh> outList, out Matrix4x4 m)
+            // ---- Phase A: build each unique record's base submeshes ONCE, in parallel. Base-build (texture
+            // decode + section assembly) is the bulk of the CPU load cost and each record is independent.
+            // Only the geometry fetch from the shared model libraries is cursor-bound, so THAT step alone is
+            // serialised (fetchLock); the expensive decode/assembly runs concurrently, and TextureProvider
+            // decodes each texture exactly once under concurrency. Records resolve across the stacked model
+            // libraries (uber.ubr + patch/expansion .ubr) since patch-added assets aren't in uber.
+            var recordNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (MapObject o in mapObjects) if (!string.IsNullOrEmpty(o.Name)) recordNames.Add(o.Name);
+            foreach (ExactObject e in groundObjects) if (!string.IsNullOrEmpty(e.Name)) recordNames.Add(e.Name);
+            foreach (RelativeObject p in warpParts) if (!string.IsNullOrEmpty(p.Name)) recordNames.Add(p.Name);
+
+            // Fetching a mesh system from the model libraries uses shared per-fetch cursors and so must be
+            // serial — but it's the cheap step (locating + returning already-materialised geometry). Do all
+            // fetches in one serial pass, then run the expensive part (texture decode + section assembly,
+            // which only touch the now-immutable systems + the thread-safe TextureProvider) fully in parallel
+            // with no lock contention.
+            var systems = new List<(string name, UberModel.MeshSystem? sys)>(recordNames.Count);
+            foreach (string name in recordNames)
+            {
+                systems.Add((name, ResolveMeshSystem(assetDir, lib, VisualRecordName(name))));
+            }
+            System.Threading.Tasks.Parallel.ForEach(systems, entry =>
+            {
+                baseCache[entry.name] = entry.sys != null
+                    ? BuildSystemSubmeshes(entry.sys, Vector3.Zero, _textures, allowRigid: false, out _)
+                    : new List<MeshSubmesh>();
+            });
+
+            List<MeshSubmesh> GetSubs(string recordName) =>
+                baseCache.TryGetValue(recordName, out List<MeshSubmesh>? subs) ? subs : new List<MeshSubmesh>();
+
+            // ---- Phase B: decide placements serially, preserving the exact instance order and the
+            // instance-count / vertex-budget cutoffs. Records each kept instance as a (base submesh,
+            // transform) pair instead of transforming inline — cheap now that base meshes are prebuilt.
+            var objPlace = new List<(MeshSubmesh bs, Matrix4x4 m)>();
+            var groundPlace = new List<(MeshSubmesh bs, Matrix4x4 m)>();
+
+            bool TryPlace(MapObject obj, List<(MeshSubmesh, Matrix4x4)> outList, out Matrix4x4 m)
             {
                 m = default;
                 if (string.IsNullOrEmpty(obj.Name)) return false;
@@ -1071,49 +1104,46 @@ namespace RaxicoreEditor.Editor.Documents
                 foreach (MeshSubmesh bs in baseSubs) instVerts += bs.VertexCount;
                 if (vertCount + instVerts > vertBudget) { skipped++; return false; }
                 m = InstanceMatrix(obj);
-                foreach (MeshSubmesh bs in baseSubs) outList.Add(TransformSubmesh(bs, m));
+                foreach (MeshSubmesh bs in baseSubs) outList.Add((bs, m));
                 vertCount += instVerts;
                 placed++;
                 return true;
             }
 
-            // ---- contents_mapNN.mpo : the main placed objects (facilities, towers, bridges, warpgate pads).
-            // A warpgate is the flat "warpgate" pad PLUS three standing arches assembled from warpgate_1.lst,
-            // each piece placed relative to the pad in its own native frame (V⁻¹·N·V carried through the pad
-            // instance m, whose shared V/V⁻¹ cancels).
-            var objSubs = new List<MeshSubmesh>();
-            if (mpo != null)
+            // contents_mapNN.mpo : facilities/towers/bridges/warpgate pads. A warpgate is the flat pad PLUS
+            // three standing arches (warpgate_1.lst), each placed relative to the pad in its own native frame
+            // (V⁻¹·N·V carried through the pad instance m, whose shared V/V⁻¹ cancels).
+            foreach (MapObject obj in mapObjects)
             {
-                IReadOnlyList<RelativeObject> warpParts = LoadRelativeObjects(pak, "warpgate_1.lst");
-                foreach (MapObject obj in mpo.Objects)
-                {
-                    if (!TryPlace(obj, objSubs, out Matrix4x4 m)) continue;
+                if (!TryPlace(obj, objPlace, out Matrix4x4 m)) continue;
 
-                    if (warpParts.Count > 0 && obj.Name.Equals("warpgate", StringComparison.OrdinalIgnoreCase))
+                if (warpParts.Count > 0 && obj.Name.Equals("warpgate", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (RelativeObject part in warpParts)
                     {
-                        foreach (RelativeObject part in warpParts)
-                        {
-                            Matrix4x4 partNative =
-                                Matrix4x4.CreateScale(part.Scale) *
-                                Matrix4x4.CreateRotationZ(part.Yaw) *
-                                Matrix4x4.CreateTranslation(part.Position);
-                            Matrix4x4 pm = ViewBasisInv * partNative * ViewBasis * m;
-                            foreach (MeshSubmesh bs in GetSubs(part.Name)) objSubs.Add(TransformSubmesh(bs, pm));
-                        }
+                        Matrix4x4 partNative =
+                            Matrix4x4.CreateScale(part.Scale) *
+                            Matrix4x4.CreateRotationZ(part.Yaw) *
+                            Matrix4x4.CreateTranslation(part.Position);
+                        Matrix4x4 pm = ViewBasisInv * partNative * ViewBasis * m;
+                        foreach (MeshSubmesh bs in GetSubs(part.Name)) objPlace.Add((bs, pm));
                     }
                 }
             }
             int contentsPlaced = placed;
 
-            // ---- groundcover_mapNN.lst : flora (trees/rocks) plus scattered structures that aren't in
-            // map_objects — the battle-island warpgate_small/hst gates, sanctuary BFR buildings and repair
-            // silos, etc. Each pse_exactobject is an absolute world placement, same frame as a map_object.
-            var groundSubs = new List<MeshSubmesh>();
-            foreach (ExactObject e in LoadExactObjects(pak, "groundcover_" + stem + ".lst"))
+            // groundcover_mapNN.lst : flora (trees/rocks) plus scattered structures that aren't in
+            // map_objects. Each pse_exactobject is an absolute world placement, same frame as a map_object.
+            foreach (ExactObject e in groundObjects)
             {
-                TryPlace(new MapObject(-1, e.Name, e.Position, e.Scale, e.Yaw), groundSubs, out _);
+                TryPlace(new MapObject(-1, e.Name, e.Position, e.Scale, e.Yaw), groundPlace, out _);
             }
             int groundPlaced = placed - contentsPlaced;
+
+            // ---- Phase C: transform every placed instance to world space in parallel. TransformSubmesh is a
+            // pure function; writing to fixed indices keeps the output order identical to serial placement.
+            List<MeshSubmesh> objSubs = TransformPlacements(objPlace);
+            List<MeshSubmesh> groundSubs = TransformPlacements(groundPlace);
 
             if (objSubs.Count == 0 && groundSubs.Count == 0) return;
 
@@ -1266,6 +1296,21 @@ namespace RaxicoreEditor.Editor.Documents
 
         // Bake a base submesh through an instance matrix (positions + normals); indices/material/texture
         // are shared (immutable) to keep memory down. Static — no skinning carried.
+        // Transform a list of (base submesh, instance matrix) placements to world space. Kept SERIAL by
+        // design: each TransformSubmesh allocates a fresh vertex array, so this is allocation-bound, and
+        // parallelising it measurably *regresses* load time on mid-size continents (GC contention on the
+        // per-submesh allocations outweighs the compute win). The parallel win lives in the base-mesh build
+        // above (texture decode + section assembly), which is compute-bound and scales cleanly.
+        private static List<MeshSubmesh> TransformPlacements(List<(MeshSubmesh bs, Matrix4x4 m)> placements)
+        {
+            var result = new List<MeshSubmesh>(placements.Count);
+            foreach ((MeshSubmesh bs, Matrix4x4 m) in placements)
+            {
+                result.Add(TransformSubmesh(bs, m));
+            }
+            return result;
+        }
+
         private static MeshSubmesh TransformSubmesh(MeshSubmesh s, Matrix4x4 m)
         {
             float[] src = s.Vertices;

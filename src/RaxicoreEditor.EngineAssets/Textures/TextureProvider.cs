@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -26,7 +27,10 @@ namespace RaxicoreEditor.EngineAssets.Textures
         }
 
         private readonly Dictionary<string, Entry> _index = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, DdsImage?> _cache = new(StringComparer.OrdinalIgnoreCase);
+        // Decoded-texture cache. Thread-safe: the index is read-only after construction, and each key
+        // decodes exactly once (via Lazy) even when many textures are decoded in parallel during a
+        // continent load. Different keys decode concurrently.
+        private readonly ConcurrentDictionary<string, Lazy<DdsImage?>> _cache = new(StringComparer.OrdinalIgnoreCase);
         private readonly MaterialsAdb? _materials;
 
         public int IndexedTextureCount => _index.Count;
@@ -143,18 +147,17 @@ namespace RaxicoreEditor.EngineAssets.Textures
             {
                 return null;
             }
-            if (_cache.TryGetValue(textureKey, out DdsImage? cached))
+            // GetOrAdd may build more than one Lazy under contention, but only the stored one is ever
+            // evaluated (.Value), so each texture is decoded exactly once.
+            return _cache.GetOrAdd(textureKey, key => new Lazy<DdsImage?>(() =>
             {
-                return cached;
-            }
-            DdsImage? result = null;
-            if (_index.TryGetValue(textureKey, out Entry e))
-            {
-                try { result = DecodeEntry(e); }
-                catch { result = null; }
-            }
-            _cache[textureKey] = result;
-            return result;
+                if (_index.TryGetValue(key, out Entry e))
+                {
+                    try { return DecodeEntry(e); }
+                    catch { return null; }
+                }
+                return null;
+            })).Value;
         }
 
         private static readonly string[] Empires = { "nc", "tr", "vs" };
