@@ -9,8 +9,25 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <Authors>Raxicore Editor</Authors>
     <Product>Raxicore Editor</Product>
+    <!-- Single source of truth for the application version. VersionPrefix drives the numeric
+         Assembly/File versions (0.1.0.0); VersionSuffix makes the semantic Version "0.1.0-beta";
+         InformationalVersion is the friendly display string shown in the window title and the
+         installer. The CI build reads VersionPrefix to name/version the NSIS installer. -->
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>beta</VersionSuffix>
+    <InformationalVersion>0.1.0 Beta</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- Intended release license. All dependencies are MIT/Apache-2.0/OFL (no copyleft). -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Copyright>Copyright (c) 2026 Raxicore Editor contributors</Copyright>
+
+    <!-- Cross-platform hardening (Windows/macOS/Linux, x64 + ARM64):
+         - InvariantGlobalization removes the native ICU (libicu) dependency, which is the single most
+           common "works on my distro" failure on minimal Linux images; the app only uses ordinal/invariant
+           string operations, so behaviour is unchanged. Formatting shows invariant (period-decimal) numbers.
+         - TieredPGO (dynamic profile-guided optimization) improves steady-state throughput of the hot
+           decode/assembly/render loops on every architecture. Default in .NET 8+, pinned here for clarity. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TieredPGO>true</TieredPGO>
   </PropertyGroup>
 </Project>
