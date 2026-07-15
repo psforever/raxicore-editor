@@ -943,6 +943,9 @@ namespace RaxicoreEditor.Editor.ViewModels
 
         // ---- console ---------------------------------------------------------------------------
 
+        /// <summary>Set the status-bar text directly (used for transient notices like update results).</summary>
+        public void SetStatus(string message) => StatusMessage = message;
+
         public void Log(string message)
         {
             ConsoleLines.Add(message);

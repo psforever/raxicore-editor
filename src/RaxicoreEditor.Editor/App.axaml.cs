@@ -27,6 +27,7 @@ namespace RaxicoreEditor.Editor
                 Enum.TryParse(Settings.ModelDetail, out ModelDetail detail) ? detail : ModelDetail.Detailed;
             RenderSettings.EngineShading = Settings.EngineShading;
             RenderSettings.Sky = Settings.Sky;
+            RenderSettings.FrameCap = Settings.FrameRateCap;
         }
 
         public override void OnFrameworkInitializationCompleted()

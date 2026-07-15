@@ -10,6 +10,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using RaxicoreEditor.Editor.Documents;
 using RaxicoreEditor.Editor.Theming;
+using RaxicoreEditor.Editor.Updates;
 using RaxicoreEditor.Editor.ViewModels;
 using RaxicoreEditor.EngineAssets.Meshes;
 
@@ -24,6 +25,7 @@ namespace RaxicoreEditor.Editor.Views
         {
             InitializeComponent();
             DataContext = _vm;
+            Title = string.IsNullOrEmpty(AppVersion.Display) ? "Raxicore Editor" : $"Raxicore Editor {AppVersion.Display}";
 
             // Reflect the persisted status-bar theme (applied at startup in App.Initialize) in the menu.
             if (Application.Current is App app)
@@ -33,6 +35,91 @@ namespace RaxicoreEditor.Editor.Views
             SyncModelDetailChecks(RenderSettings.Detail);
             EngineShadingItem.IsChecked = RenderSettings.EngineShading;
             SkyItem.IsChecked = RenderSettings.Sky;
+            SetUpFrameRateMenu();
+            AutoUpdateItem.IsChecked = (Application.Current as App)?.Settings.AutoCheckForUpdates ?? true;
+
+            // The in-app updater installs a Windows .exe, so hide it entirely on other platforms.
+            if (!OperatingSystem.IsWindows())
+            {
+                CheckUpdatesItem.IsVisible = false;
+                AutoUpdateItem.IsVisible = false;
+                UpdateSeparator.IsVisible = false;
+            }
+
+            // Auto-check runs once the window is up (never blocks startup; only ever *offers* an update).
+            Opened += OnWindowOpened;
+        }
+
+        private async void OnWindowOpened(object? sender, EventArgs e)
+        {
+            Opened -= OnWindowOpened;
+            if ((Application.Current as App)?.Settings.AutoCheckForUpdates == true)
+            {
+                await CheckForUpdatesAsync(silent: true);
+            }
+        }
+
+        private void OnCheckForUpdates(object? sender, RoutedEventArgs e) => _ = CheckForUpdatesAsync(silent: false);
+
+        private void OnToggleAutoUpdate(object? sender, RoutedEventArgs e)
+        {
+            bool on = AutoUpdateItem.IsChecked;
+            if (Application.Current is App app)
+            {
+                app.Settings.AutoCheckForUpdates = on;
+                app.Settings.Save();
+            }
+            _vm.Log($"Automatic update check: {(on ? "on" : "off")}.");
+        }
+
+        /// <summary>Query GitHub for a newer release and, if found, show the update dialog. In silent mode
+        /// (startup) failures and the "up to date" case stay quiet, and a version the user chose to skip is
+        /// suppressed; a manual check reports every outcome in the status bar.</summary>
+        private async Task CheckForUpdatesAsync(bool silent)
+        {
+            // The updater downloads and runs the Windows NSIS installer, so it only applies on Windows. On
+            // macOS/Linux, updates come through the platform's own package/build.
+            if (!OperatingSystem.IsWindows())
+            {
+                if (!silent)
+                {
+                    _vm.SetStatus("In-app updates are Windows-only; update this build through your platform's package or a fresh build.");
+                }
+                return;
+            }
+            if (!silent)
+            {
+                _vm.SetStatus("Checking for updates…");
+            }
+            try
+            {
+                UpdateInfo? info = await UpdateService.CheckForUpdateAsync();
+                if (info is null)
+                {
+                    if (!silent)
+                    {
+                        _vm.SetStatus($"You're up to date — Raxicore Editor {AppVersion.Display}.");
+                    }
+                    return;
+                }
+
+                // On the startup check, honour a version the user explicitly skipped.
+                string? skipped = (Application.Current as App)?.Settings.SkippedUpdateVersion;
+                if (silent && !string.IsNullOrEmpty(skipped) && skipped == info.Version.ToString())
+                {
+                    return;
+                }
+
+                await new UpdateDialog(info).ShowDialog(this);
+            }
+            catch (Exception ex)
+            {
+                if (!silent)
+                {
+                    _vm.SetStatus("Update check failed: " + ex.Message);
+                }
+                _vm.Log("update check failed: " + ex.Message);
+            }
         }
 
         private void OnToggleSky(object? sender, RoutedEventArgs e)
@@ -135,6 +222,11 @@ namespace RaxicoreEditor.Editor.Views
 
         private void OnExit(object? sender, RoutedEventArgs e) => Close();
 
+        private void OnAbout(object? sender, RoutedEventArgs e)
+        {
+            _ = new AboutDialog().ShowDialog(this);
+        }
+
         private void OnThemeSystem(object? sender, RoutedEventArgs e) => SetVariant(ThemeVariant.Default);
         private void OnThemeLight(object? sender, RoutedEventArgs e) => SetVariant(ThemeVariant.Light);
         private void OnThemeDark(object? sender, RoutedEventArgs e) => SetVariant(ThemeVariant.Dark);
@@ -200,6 +292,65 @@ namespace RaxicoreEditor.Editor.Views
         {
             DetailFullItem.IsChecked = detail == ModelDetail.Detailed;
             DetailLowItem.IsChecked = detail == ModelDetail.Low;
+        }
+
+        // The framerate-cap radio items and their FPS value (0 = Unlimited).
+        private (MenuItem Item, int Fps)[] FrameRateItems() => new[]
+        {
+            (Fps24Item, 24), (Fps30Item, 30), (Fps60Item, 60), (Fps75Item, 75),
+            (Fps120Item, 120), (Fps144Item, 144), (Fps165Item, 165), (Fps240Item, 240),
+            (FpsUnlimitedItem, 0),
+        };
+
+        // Reflect the persisted cap in the menu, and grey out caps that exceed the monitor's refresh rate
+        // (they'd render frames the display can't show). If the refresh rate is unknown (non-Windows or the
+        // query failed), every option stays available.
+        private void SetUpFrameRateMenu()
+        {
+            int saved = RenderSettings.FrameCap;
+            int? maxHz = MonitorInfo.MaxSupportedRefreshHz();
+            int? currentHz = MonitorInfo.CurrentRefreshHz();
+            if (maxHz is int max)
+            {
+                string cur = currentHz is int c && c != max ? $" (currently {c} Hz)" : "";
+                ToolTip.SetTip(FrameRateMenu,
+                    $"Cap how fast the 3D viewport renders. Your display supports up to {max} Hz{cur}; higher " +
+                    "caps are disabled since the display can't show more than that.");
+            }
+            foreach ((MenuItem item, int fps) in FrameRateItems())
+            {
+                item.IsChecked = fps == saved;
+                if (fps > 0 && maxHz is int cap && fps > cap)
+                {
+                    item.IsEnabled = false;
+                    ToolTip.SetTip(item, $"Above your display's {cap} Hz — it can't show more than {cap} fps.");
+                }
+            }
+        }
+
+        private void SyncFrameCapChecks(int fps)
+        {
+            foreach ((MenuItem item, int f) in FrameRateItems())
+            {
+                item.IsChecked = f == fps;
+            }
+        }
+
+        private void OnFrameCap(object? sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem { Tag: string tag } || !int.TryParse(tag, out int fps))
+            {
+                return;
+            }
+            RenderSettings.FrameCap = fps;
+            if (Application.Current is App app)
+            {
+                app.Settings.FrameRateCap = fps;
+                app.Settings.Save();
+            }
+            SyncFrameCapChecks(fps);
+            RenderSettings.RaiseChanged(); // nudge idle viewports so a lowered cap takes effect immediately
+            _vm.Log($"Frame rate cap: {(fps == 0 ? "unlimited" : fps + " fps")}.");
         }
 
         private async void OnToggleEngineShading(object? sender, RoutedEventArgs e)

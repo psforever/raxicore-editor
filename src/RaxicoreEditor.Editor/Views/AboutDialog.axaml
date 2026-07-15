@@ -1,0 +1,46 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RaxicoreEditor.Editor.Views.AboutDialog"
+        x:CompileBindings="False"
+        Title="About Raxicore Editor"
+        Width="460" SizeToContent="Height"
+        CanResize="False"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Icon="/Assets/icon.png"
+        Background="{DynamicResource WindowBackgroundBrush}">
+  <StackPanel Margin="26,22" Spacing="14">
+    <!-- Logo + name + version -->
+    <StackPanel Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+      <Image Source="/Assets/icon.png" Width="56" Height="56"
+             VerticalAlignment="Top" RenderOptions.BitmapInterpolationMode="HighQuality" />
+      <StackPanel Spacing="2" VerticalAlignment="Center">
+        <TextBlock Text="Raxicore Editor" FontSize="22" FontWeight="SemiBold"
+                   Foreground="{DynamicResource TextBrush}" />
+        <TextBlock x:Name="VersionText" FontSize="13"
+                   Foreground="{DynamicResource AccentTertiaryBrush}" FontWeight="Medium" />
+      </StackPanel>
+    </StackPanel>
+
+    <TextBlock Text="A viewer and editor for engine-derived game assets — meshes, textures, animations, audio, and data files."
+               TextWrapping="Wrap" FontSize="12.5"
+               Foreground="{DynamicResource SubtleTextBrush}" />
+
+    <!-- Project link -->
+    <StackPanel Orientation="Horizontal" Spacing="6">
+      <TextBlock Text="Project:" FontSize="12" VerticalAlignment="Center"
+                 Foreground="{DynamicResource SubtleTextBrush}" />
+      <Button x:Name="RepoLink" Click="OnOpenRepo"
+              Background="Transparent" BorderThickness="0" Padding="0" MinWidth="0"
+              Cursor="Hand"
+              Content="github.com/psforever/raxicore-editor"
+              Foreground="{DynamicResource AccentSecondaryBrush}" FontSize="12" />
+    </StackPanel>
+
+    <TextBlock x:Name="CopyrightText" FontSize="11"
+               Foreground="{DynamicResource SubtleTextBrush}" />
+
+    <Button Content="Close" Click="OnClose" HorizontalAlignment="Right"
+            MinWidth="88" Padding="10,4" />
+  </StackPanel>
+</Window>

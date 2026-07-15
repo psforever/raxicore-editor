@@ -23,9 +23,21 @@ namespace RaxicoreEditor.Editor
         /// <summary>Whether continents draw their procedural sky (see <see cref="RenderSettings.Sky"/>).</summary>
         public bool Sky { get; set; } = false;
 
+        /// <summary>Viewport framerate cap in FPS (see <see cref="RenderSettings.FrameCap"/>). <c>0</c> =
+        /// uncapped. Default uncapped so the viewport runs at the display's refresh out of the box.</summary>
+        public int FrameRateCap { get; set; } = 0;
+
         /// <summary>Explicit path to a <c>blender</c> executable for .blend export. Empty = auto-detect
         /// (PATH, then the standard install locations).</summary>
         public string BlenderPath { get; set; } = "";
+
+        /// <summary>Whether the app checks GitHub for a newer release at startup. The check only ever
+        /// *offers* an update — downloading and installing always require an explicit click. On by default.</summary>
+        public bool AutoCheckForUpdates { get; set; } = true;
+
+        /// <summary>A release version the user chose to skip (e.g. <c>0.1.1.0</c>); the startup check won't
+        /// re-prompt for it. Empty = nothing skipped. Cleared implicitly once a newer version appears.</summary>
+        public string SkippedUpdateVersion { get; set; } = "";
 
         private static string SettingsDir =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RaxicoreEditor");

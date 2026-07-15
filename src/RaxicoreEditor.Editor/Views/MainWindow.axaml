@@ -92,6 +92,35 @@
                   ToggleType="CheckBox" x:Name="SkyItem"
                   IsVisible="{Binding ActiveDocumentHasSky}"
                   ToolTip.Tip="Draw this continent's procedural sky (horizon/sky/sun from its engine lighting cycle) behind the scene." />
+        <Separator />
+        <MenuItem x:Name="FrameRateMenu"
+                  ToolTip.Tip="Cap how fast the 3D viewport renders. Rates above your monitor's refresh are disabled — they'd render frames the display can't show.">
+          <MenuItem.Header><AccessText Text="_Frame Rate" /></MenuItem.Header>
+          <MenuItem Header="24 fps" Tag="24" Click="OnFrameCap" ToggleType="Radio" x:Name="Fps24Item" />
+          <MenuItem Header="30 fps" Tag="30" Click="OnFrameCap" ToggleType="Radio" x:Name="Fps30Item" />
+          <MenuItem Header="60 fps" Tag="60" Click="OnFrameCap" ToggleType="Radio" x:Name="Fps60Item" />
+          <MenuItem Header="75 fps" Tag="75" Click="OnFrameCap" ToggleType="Radio" x:Name="Fps75Item" />
+          <MenuItem Header="120 fps" Tag="120" Click="OnFrameCap" ToggleType="Radio" x:Name="Fps120Item" />
+          <MenuItem Header="144 fps" Tag="144" Click="OnFrameCap" ToggleType="Radio" x:Name="Fps144Item" />
+          <MenuItem Header="165 fps" Tag="165" Click="OnFrameCap" ToggleType="Radio" x:Name="Fps165Item" />
+          <MenuItem Header="240 fps" Tag="240" Click="OnFrameCap" ToggleType="Radio" x:Name="Fps240Item" />
+          <Separator />
+          <MenuItem Header="Unlimited" Tag="0" Click="OnFrameCap" ToggleType="Radio" x:Name="FpsUnlimitedItem"
+                    ToolTip.Tip="Render as fast as the pipeline allows (matches the display via the compositor)." />
+        </MenuItem>
+      </MenuItem>
+      <MenuItem>
+        <MenuItem.Header><AccessText Text="_Help" /></MenuItem.Header>
+        <MenuItem Click="OnCheckForUpdates" x:Name="CheckUpdatesItem">
+          <MenuItem.Header><AccessText Text="Check for _Updates…" /></MenuItem.Header>
+        </MenuItem>
+        <MenuItem Header="Automatically check for updates" Click="OnToggleAutoUpdate"
+                  ToggleType="CheckBox" x:Name="AutoUpdateItem"
+                  ToolTip.Tip="Check GitHub for a newer release at startup. Updates are only ever offered — downloading and installing always require your confirmation." />
+        <Separator x:Name="UpdateSeparator" />
+        <MenuItem Click="OnAbout">
+          <MenuItem.Header><AccessText Text="_About Raxicore Editor" /></MenuItem.Header>
+        </MenuItem>
       </MenuItem>
     </Menu>
   </shadui:Window.MenuBarContent>
