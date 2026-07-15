@@ -69,15 +69,49 @@ bpy.ops.wm.save_as_mainfile(filepath=blend_path)
                 return onPath;
             }
 
-            var roots = new List<string>();
-            foreach (Environment.SpecialFolder sf in new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 })
+            // macOS ships Blender as an .app bundle; check the standard install locations directly.
+            if (OperatingSystem.IsMacOS())
             {
-                string pf = Environment.GetFolderPath(sf);
-                if (!string.IsNullOrEmpty(pf))
+                string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                foreach (string app in new[]
                 {
-                    roots.Add(Path.Combine(pf, "Blender Foundation"));
-                    roots.Add(Path.Combine(pf, "Steam", "steamapps", "common", "Blender"));
+                    "/Applications/Blender.app/Contents/MacOS/Blender",
+                    Path.Combine(home, "Applications", "Blender.app", "Contents", "MacOS", "Blender"),
+                })
+                {
+                    if (File.Exists(app)) return app;
                 }
+            }
+
+            var roots = new List<string>();
+            if (OperatingSystem.IsWindows())
+            {
+                foreach (Environment.SpecialFolder sf in new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 })
+                {
+                    string pf = Environment.GetFolderPath(sf);
+                    if (!string.IsNullOrEmpty(pf))
+                    {
+                        roots.Add(Path.Combine(pf, "Blender Foundation"));
+                        roots.Add(Path.Combine(pf, "Steam", "steamapps", "common", "Blender"));
+                    }
+                }
+            }
+            else
+            {
+                // Linux: common package + Steam + Flatpak export locations. (Snap/Flatpak installs also put
+                // a `blender` launcher on PATH, already handled above.)
+                string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                foreach (string p in new[]
+                {
+                    "/usr/bin/blender", "/usr/local/bin/blender", "/opt/blender/blender",
+                    "/var/lib/flatpak/exports/bin/org.blender.Blender",
+                    Path.Combine(home, ".local", "share", "flatpak", "exports", "bin", "org.blender.Blender"),
+                    Path.Combine(home, ".steam", "steam", "steamapps", "common", "Blender", "blender"),
+                })
+                {
+                    if (File.Exists(p)) return p;
+                }
+                roots.Add(Path.Combine(home, "Steam", "steamapps", "common", "Blender"));
             }
             foreach (string root in roots)
             {
