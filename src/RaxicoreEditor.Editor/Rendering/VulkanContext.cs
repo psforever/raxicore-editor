@@ -70,13 +70,34 @@ namespace RaxicoreEditor.Editor.Rendering
                     EngineVersion = new Version32(0, 1, 0),
                     ApiVersion = Vk.Version11,
                 };
+                // macOS renders Vulkan only through MoltenVK, a non-conformant "portability" driver that the
+                // loader hides unless VK_KHR_portability_enumeration is enabled and the enumeration flag is
+                // set. This block is entered only on macOS, so Windows/Linux instance creation is unchanged.
+                nint extPtr = 0;
+                uint extCount = 0;
+                InstanceCreateFlags flags = 0;
+                if (OperatingSystem.IsMacOS() && InstanceExtensionAvailable("VK_KHR_portability_enumeration"))
+                {
+                    extPtr = SilkMarshal.StringArrayToPtr(new[] { "VK_KHR_portability_enumeration" });
+                    extCount = 1;
+                    flags = InstanceCreateFlags.EnumeratePortabilityBitKhr;
+                }
+
                 var ci = new InstanceCreateInfo
                 {
                     SType = StructureType.InstanceCreateInfo,
                     PApplicationInfo = &app,
+                    Flags = flags,
+                    EnabledExtensionCount = extCount,
+                    PpEnabledExtensionNames = (byte**)extPtr,
                 };
                 Instance instance;
-                Check(Vk.CreateInstance(&ci, null, &instance), "CreateInstance");
+                Result r = Vk.CreateInstance(&ci, null, &instance);
+                if (extPtr != 0)
+                {
+                    SilkMarshal.Free(extPtr);
+                }
+                Check(r, "CreateInstance");
                 Instance = instance;
             }
             finally
@@ -85,6 +106,57 @@ namespace RaxicoreEditor.Editor.Rendering
                 SilkMarshal.Free((nint)engineName);
             }
         }
+
+        // Whether a Vulkan instance-level extension is advertised by the loader.
+        private bool InstanceExtensionAvailable(string name)
+        {
+            uint n = 0;
+            Vk.EnumerateInstanceExtensionProperties((byte*)null, ref n, null);
+            if (n == 0)
+            {
+                return false;
+            }
+            var props = new ExtensionProperties[n];
+            fixed (ExtensionProperties* p = props)
+            {
+                Vk.EnumerateInstanceExtensionProperties((byte*)null, ref n, p);
+                for (uint i = 0; i < n; i++)
+                {
+                    if (ExtensionName(&p[i]) == name)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // Whether a device-level extension is supported by a physical device.
+        private bool DeviceExtensionAvailable(PhysicalDevice dev, string name)
+        {
+            uint n = 0;
+            Vk.EnumerateDeviceExtensionProperties(dev, (byte*)null, ref n, null);
+            if (n == 0)
+            {
+                return false;
+            }
+            var props = new ExtensionProperties[n];
+            fixed (ExtensionProperties* p = props)
+            {
+                Vk.EnumerateDeviceExtensionProperties(dev, (byte*)null, ref n, p);
+                for (uint i = 0; i < n; i++)
+                {
+                    if (ExtensionName(&p[i]) == name)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static string ExtensionName(ExtensionProperties* e) =>
+            System.Runtime.InteropServices.Marshal.PtrToStringAnsi((nint)e->ExtensionName) ?? "";
 
         private void PickPhysicalDevice()
         {
@@ -145,15 +217,33 @@ namespace RaxicoreEditor.Editor.Rendering
                 PQueuePriorities = &priority,
             };
             var features = new PhysicalDeviceFeatures { FillModeNonSolid = true };
+
+            // A MoltenVK physical device is a portability-subset device; the Vulkan spec REQUIRES enabling
+            // VK_KHR_portability_subset whenever a device advertises it. Only reached on macOS.
+            nint devExtPtr = 0;
+            uint devExtCount = 0;
+            if (OperatingSystem.IsMacOS() && DeviceExtensionAvailable(PhysicalDevice, "VK_KHR_portability_subset"))
+            {
+                devExtPtr = SilkMarshal.StringArrayToPtr(new[] { "VK_KHR_portability_subset" });
+                devExtCount = 1;
+            }
+
             var dci = new DeviceCreateInfo
             {
                 SType = StructureType.DeviceCreateInfo,
                 QueueCreateInfoCount = 1,
                 PQueueCreateInfos = &qci,
                 PEnabledFeatures = &features,
+                EnabledExtensionCount = devExtCount,
+                PpEnabledExtensionNames = (byte**)devExtPtr,
             };
             Device device;
-            Check(Vk.CreateDevice(PhysicalDevice, &dci, null, &device), "CreateDevice");
+            Result res = Vk.CreateDevice(PhysicalDevice, &dci, null, &device);
+            if (devExtPtr != 0)
+            {
+                SilkMarshal.Free(devExtPtr);
+            }
+            Check(res, "CreateDevice");
             Device = device;
             Vk.GetDeviceQueue(Device, GraphicsFamily, 0, out Queue queue);
             GraphicsQueue = queue;
@@ -174,16 +264,35 @@ namespace RaxicoreEditor.Editor.Rendering
 
         public uint FindMemoryType(uint typeBits, MemoryPropertyFlags props)
         {
+            if (TryFindMemoryType(typeBits, props, out uint i))
+            {
+                return i;
+            }
+            throw new InvalidOperationException("No suitable Vulkan memory type");
+        }
+
+        /// <summary>Find a memory type index with all of <paramref name="props"/>, without throwing.</summary>
+        public bool TryFindMemoryType(uint typeBits, MemoryPropertyFlags props, out uint index)
+        {
             Vk.GetPhysicalDeviceMemoryProperties(PhysicalDevice, out PhysicalDeviceMemoryProperties mp);
             for (uint i = 0; i < mp.MemoryTypeCount; i++)
             {
                 if ((typeBits & (1u << (int)i)) != 0 &&
                     (mp.MemoryTypes[(int)i].PropertyFlags & props) == props)
                 {
-                    return i;
+                    index = i;
+                    return true;
                 }
             }
-            throw new InvalidOperationException("No suitable Vulkan memory type");
+            index = 0;
+            return false;
+        }
+
+        /// <summary>Whether a memory type carries <see cref="MemoryPropertyFlags.HostCoherentBit"/>.</summary>
+        public bool MemoryTypeIsCoherent(uint index)
+        {
+            Vk.GetPhysicalDeviceMemoryProperties(PhysicalDevice, out PhysicalDeviceMemoryProperties mp);
+            return (mp.MemoryTypes[(int)index].PropertyFlags & MemoryPropertyFlags.HostCoherentBit) != 0;
         }
 
         public static void Check(Result r, string what)

@@ -63,9 +63,12 @@ namespace RaxicoreEditor.Editor.Rendering
         private Framebuffer _framebuffer;
         private Silk.NET.Vulkan.Buffer _readback;
         private DeviceMemory _readbackMem;
+        private bool _readbackCoherent = true; // false when readback uses HOST_CACHED (needs invalidation)
 
-        // Mesh — per-submesh GPU buffers + shared textures/descriptors.
-        private struct GpuSubmesh
+        // Mesh — one GPU draw unit ("batch"). Static geometry is merged by (texture, translucency) into a
+        // handful of large device-local batches (few draw calls, VRAM-resident); each vertex-skinned submesh
+        // stays its own host-visible batch so the viewport can rewrite its vertices per animation frame.
+        private struct GpuBatch
         {
             public Silk.NET.Vulkan.Buffer Vbuf;
             public DeviceMemory Vmem;
@@ -74,6 +77,7 @@ namespace RaxicoreEditor.Editor.Rendering
             public uint IndexCount;
             public DescriptorSet DescSet;
             public bool Translucent;
+            public bool HostVisible; // true only for skinned batches (per-frame CPU vertex updates)
         }
         private struct GpuTexture
         {
@@ -81,7 +85,9 @@ namespace RaxicoreEditor.Editor.Rendering
             public DeviceMemory Mem;
             public ImageView View;
         }
-        private readonly List<GpuSubmesh> _submeshes = new();
+        private readonly List<GpuBatch> _batches = new();
+        // Maps an original (skinned) submesh index → its entry in _batches, for UpdateSubmeshVertices.
+        private readonly Dictionary<int, int> _skinnedBatch = new();
         private readonly List<GpuTexture> _textures = new();
         private DescriptorPool _descPool;
 
@@ -144,31 +150,122 @@ namespace RaxicoreEditor.Editor.Rendering
                 descSets[i] = AllocateTextureDescriptor(t.View);
             }
 
-            foreach (MeshSubmesh s in submeshes)
+            int TexOf(MeshSubmesh s) =>
+                s.HasTexture && s.TextureBgra != null && texIndex.TryGetValue(s.TextureBgra, out int idx) ? idx : 0;
+
+            // Pass 1: tally the merged size of each static (non-skinned) group, keyed by (texture,
+            // translucency). Skinned submeshes are handled individually below and excluded from merging.
+            var groupTotals = new Dictionary<(int tex, bool trans), (long verts, long indices)>();
+            for (int i = 0; i < submeshes.Count; i++)
             {
-                if (s.Indices.Length == 0)
+                MeshSubmesh s = submeshes[i];
+                if (s.Indices.Length == 0 || s.IsSkinned)
                 {
                     continue;
                 }
-                // Interleave the stride-8 (pos/normal/uv) data with the baked colour into the stride-12
-                // vertex the pipelines expect (colour defaults to white when the submesh carries none).
+                var key = (TexOf(s), s.IsTranslucent);
+                groupTotals.TryGetValue(key, out (long verts, long indices) t);
+                t.verts += s.Vertices.Length / 8;
+                t.indices += s.Indices.Length;
+                groupTotals[key] = t;
+            }
+
+            // Allocate one merged (stride-12 vertex, uint index) CPU array per group, then fill them in a
+            // second pass — offsetting each submesh's indices by the group's running vertex count. This is
+            // one big device-local buffer pair per group instead of a pair per submesh (58k → a few hundred),
+            // which is the bulk of the load-time and per-frame win.
+            var groupData = new Dictionary<(int, bool), (float[] v, uint[] ix, int vOff, int iOff, int vBase)>();
+            foreach (KeyValuePair<(int tex, bool trans), (long verts, long indices)> g in groupTotals)
+            {
+                groupData[g.Key] = (new float[g.Value.verts * 12], new uint[g.Value.indices], 0, 0, 0);
+            }
+            for (int i = 0; i < submeshes.Count; i++)
+            {
+                MeshSubmesh s = submeshes[i];
+                if (s.Indices.Length == 0 || s.IsSkinned)
+                {
+                    continue;
+                }
+                var key = (TexOf(s), s.IsTranslucent);
+                (float[] v, uint[] ix, int vOff, int iOff, int vBase) d = groupData[key];
+                int vc = s.Vertices.Length / 8;
+                AppendVertices(d.v, d.vOff, s.Vertices, s.Colors);
+                for (int k = 0; k < s.Indices.Length; k++)
+                {
+                    d.ix[d.iOff + k] = s.Indices[k] + (uint)d.vBase;
+                }
+                d.vOff += vc * 12;
+                d.iOff += s.Indices.Length;
+                d.vBase += vc;
+                groupData[key] = d;
+            }
+            foreach (KeyValuePair<(int tex, bool trans), (float[] v, uint[] ix, int vOff, int iOff, int vBase)> g in groupData)
+            {
+                if (g.Value.ix.Length == 0)
+                {
+                    continue;
+                }
+                (Silk.NET.Vulkan.Buffer vbuf, DeviceMemory vmem) =
+                    CreateDeviceLocalBuffer<float>(g.Value.v, BufferUsageFlags.VertexBufferBit);
+                (Silk.NET.Vulkan.Buffer ibuf, DeviceMemory imem) =
+                    CreateDeviceLocalBuffer<uint>(g.Value.ix, BufferUsageFlags.IndexBufferBit);
+                _batches.Add(new GpuBatch
+                {
+                    Vbuf = vbuf, Vmem = vmem, Ibuf = ibuf, Imem = imem,
+                    IndexCount = (uint)g.Value.ix.Length, DescSet = descSets[g.Key.tex],
+                    Translucent = g.Key.trans, HostVisible = false,
+                });
+            }
+
+            // Skinned submeshes: each keeps its own host-visible vertex buffer (rewritten per animation
+            // frame by UpdateSubmeshVertices) and a static device-local index buffer.
+            for (int i = 0; i < submeshes.Count; i++)
+            {
+                MeshSubmesh s = submeshes[i];
+                if (s.Indices.Length == 0 || !s.IsSkinned)
+                {
+                    continue;
+                }
                 float[] vbData = BuildVertexBuffer(s.Vertices, s.Colors);
                 (Silk.NET.Vulkan.Buffer vbuf, DeviceMemory vmem) =
                     CreateHostBuffer<float>(vbData, BufferUsageFlags.VertexBufferBit);
                 (Silk.NET.Vulkan.Buffer ibuf, DeviceMemory imem) =
-                    CreateHostBuffer<uint>(s.Indices, BufferUsageFlags.IndexBufferBit);
-                int ti = s.HasTexture && s.TextureBgra != null && texIndex.TryGetValue(s.TextureBgra, out int idx) ? idx : 0;
-                _submeshes.Add(new GpuSubmesh
+                    CreateDeviceLocalBuffer<uint>(s.Indices, BufferUsageFlags.IndexBufferBit);
+                _skinnedBatch[i] = _batches.Count;
+                _batches.Add(new GpuBatch
                 {
                     Vbuf = vbuf, Vmem = vmem, Ibuf = ibuf, Imem = imem,
-                    IndexCount = (uint)s.Indices.Length, DescSet = descSets[ti],
-                    Translucent = s.IsTranslucent,
+                    IndexCount = (uint)s.Indices.Length, DescSet = descSets[TexOf(s)],
+                    Translucent = s.IsTranslucent, HostVisible = true,
                 });
             }
         }
 
-        /// <summary>Number of GPU submeshes (1:1 with the list passed to <see cref="SetMesh"/>).</summary>
-        public int SubmeshCount => _submeshes.Count;
+        /// <summary>Number of GPU draw batches (merged static groups + individual skinned submeshes).</summary>
+        public int SubmeshCount => _batches.Count;
+
+        // Interleave one submesh's stride-8 geometry + optional stride-4 colour directly into the merged
+        // group array at float offset <paramref name="dstOff"/> (stride-12), avoiding a per-submesh temp.
+        private static void AppendVertices(float[] dst, int dstOff, float[] v8, float[]? c4)
+        {
+            int vc = v8.Length / 8;
+            for (int i = 0; i < vc; i++)
+            {
+                int si = i * 8, di = dstOff + i * 12;
+                dst[di + 0] = v8[si + 0]; dst[di + 1] = v8[si + 1]; dst[di + 2] = v8[si + 2];
+                dst[di + 3] = v8[si + 3]; dst[di + 4] = v8[si + 4]; dst[di + 5] = v8[si + 5];
+                dst[di + 6] = v8[si + 6]; dst[di + 7] = v8[si + 7];
+                if (c4 != null)
+                {
+                    dst[di + 8] = c4[i * 4 + 0]; dst[di + 9] = c4[i * 4 + 1];
+                    dst[di + 10] = c4[i * 4 + 2]; dst[di + 11] = c4[i * 4 + 3];
+                }
+                else
+                {
+                    dst[di + 8] = 1f; dst[di + 9] = 1f; dst[di + 10] = 1f; dst[di + 11] = 1f;
+                }
+            }
+        }
 
         // Interleave stride-8 geometry (pos3, normal3, uv2) with stride-4 baked colour (rgba) into the
         // stride-12 vertex all four mesh pipelines read. Colour defaults to white when none is supplied.
@@ -202,12 +299,14 @@ namespace RaxicoreEditor.Editor.Rendering
         /// </summary>
         public void UpdateSubmeshVertices(int index, float[] verts)
         {
-            if (index < 0 || index >= _submeshes.Count)
+            // `index` is an original (skinned) submesh index; only skinned submeshes have host-visible
+            // vertex buffers. Static merged batches are device-local and never updated here.
+            if (!_skinnedBatch.TryGetValue(index, out int batch))
             {
                 return;
             }
-            GpuSubmesh s = _submeshes[index];
-            if (s.Vbuf.Handle == 0)
+            GpuBatch s = _batches[batch];
+            if (s.Vbuf.Handle == 0 || !s.HostVisible)
             {
                 return;
             }
@@ -339,8 +438,51 @@ namespace RaxicoreEditor.Editor.Rendering
             _framebuffer = fb;
 
             ulong size = (ulong)width * (ulong)height * 4UL;
-            (_readback, _readbackMem) = CreateBuffer(size, BufferUsageFlags.TransferDstBit,
-                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            CreateReadbackBuffer(size);
+        }
+
+        // The per-frame framebuffer readback is CPU-read-bound: the shader/GPU write the color image, then
+        // the CPU copies it out to the WriteableBitmap. HOST_COHERENT memory is typically write-combined
+        // (uncached), and reading uncached memory is *catastrophically* slow (~150 MB/s → tens of ms for a
+        // 1080p frame). HOST_CACHED memory makes CPU reads fast; it may be non-coherent, so the read path
+        // invalidates the mapped range first. Falls back to coherent if the device has no cached type.
+        private void CreateReadbackBuffer(ulong size)
+        {
+            var bci = new BufferCreateInfo
+            {
+                SType = StructureType.BufferCreateInfo,
+                Size = size,
+                Usage = BufferUsageFlags.TransferDstBit,
+                SharingMode = SharingMode.Exclusive,
+            };
+            Silk.NET.Vulkan.Buffer buffer;
+            VulkanContext.Check(_vk.CreateBuffer(_dev, &bci, null, &buffer), "CreateBuffer(readback)");
+            _vk.GetBufferMemoryRequirements(_dev, buffer, out MemoryRequirements req);
+
+            uint typeIndex;
+            if (_ctx.TryFindMemoryType(req.MemoryTypeBits,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCachedBit, out typeIndex))
+            {
+                _readbackCoherent = _ctx.MemoryTypeIsCoherent(typeIndex);
+            }
+            else
+            {
+                typeIndex = _ctx.FindMemoryType(req.MemoryTypeBits,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+                _readbackCoherent = true;
+            }
+
+            var ai = new MemoryAllocateInfo
+            {
+                SType = StructureType.MemoryAllocateInfo,
+                AllocationSize = req.Size,
+                MemoryTypeIndex = typeIndex,
+            };
+            DeviceMemory mem;
+            VulkanContext.Check(_vk.AllocateMemory(_dev, &ai, null, &mem), "AllocateMemory(readback)");
+            _vk.BindBufferMemory(_dev, buffer, mem, 0);
+            _readback = buffer;
+            _readbackMem = mem;
         }
 
         // ---- render ----------------------------------------------------------------------------
@@ -397,7 +539,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 _vk.CmdDraw(_cmd, 3, 1, 0, 0);
             }
 
-            if (_submeshes.Count > 0)
+            if (_batches.Count > 0)
             {
                 var push = stackalloc float[32];
                 CopyMatrix(mvp, push);
@@ -411,7 +553,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 // Opaque/cutout pass first (depth write on), then translucent overlays (depth write
                 // off) so masks/shields/beams correctly composite over whatever is already drawn.
                 _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, engine ? _enginePipeline : _pipeline);
-                foreach (GpuSubmesh s in _submeshes)
+                foreach (GpuBatch s in _batches)
                 {
                     if (s.Translucent) continue;
                     DescriptorSet ds = s.DescSet;
@@ -423,7 +565,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 }
 
                 _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, engine ? _engineBlendPipeline : _blendPipeline);
-                foreach (GpuSubmesh s in _submeshes)
+                foreach (GpuBatch s in _batches)
                 {
                     if (!s.Translucent) continue;
                     DescriptorSet ds = s.DescSet;
@@ -476,6 +618,19 @@ namespace RaxicoreEditor.Editor.Rendering
             ulong size = (ulong)_width * (ulong)_height * 4UL;
             void* mapped = null;
             _vk.MapMemory(_dev, _readbackMem, 0, size, 0, ref mapped);
+            // HOST_CACHED readback memory may be non-coherent: make the GPU's writes visible to the CPU
+            // cache before reading. (Coherent memory needs no invalidation.)
+            if (!_readbackCoherent)
+            {
+                var range = new MappedMemoryRange
+                {
+                    SType = StructureType.MappedMemoryRange,
+                    Memory = _readbackMem,
+                    Offset = 0,
+                    Size = Vk.WholeSize,
+                };
+                _vk.InvalidateMappedMemoryRanges(_dev, 1, &range);
+            }
             new ReadOnlySpan<byte>(mapped, (int)size).CopyTo(dst);
             _vk.UnmapMemory(_dev, _readbackMem);
             return true;
@@ -1269,6 +1424,38 @@ namespace RaxicoreEditor.Editor.Rendering
             return (buffer, mem);
         }
 
+        // Upload static data to a DEVICE_LOCAL (VRAM) buffer via a temporary host-visible staging buffer.
+        // Device-local memory means the GPU fetches vertices/indices from VRAM instead of across PCIe on
+        // every draw — a large win for big static meshes. Used for merged geometry + static index buffers.
+        private (Silk.NET.Vulkan.Buffer, DeviceMemory) CreateDeviceLocalBuffer<T>(T[] data, BufferUsageFlags usage)
+            where T : unmanaged
+        {
+            ulong size = (ulong)((long)data.Length * sizeof(T));
+            (Silk.NET.Vulkan.Buffer staging, DeviceMemory stagingMem) = CreateBuffer(size,
+                BufferUsageFlags.TransferSrcBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            void* mapped = null;
+            _vk.MapMemory(_dev, stagingMem, 0, size, 0, ref mapped);
+            fixed (T* src = data)
+            {
+                System.Buffer.MemoryCopy(src, mapped, size, size);
+            }
+            _vk.UnmapMemory(_dev, stagingMem);
+
+            (Silk.NET.Vulkan.Buffer buffer, DeviceMemory mem) = CreateBuffer(size,
+                usage | BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.DeviceLocalBit);
+
+            OneTimeSubmit(cmd =>
+            {
+                var region = new BufferCopy { SrcOffset = 0, DstOffset = 0, Size = size };
+                _vk.CmdCopyBuffer(cmd, staging, buffer, 1, &region);
+            });
+
+            _vk.DestroyBuffer(_dev, staging, null);
+            _vk.FreeMemory(_dev, stagingMem, null);
+            return (buffer, mem);
+        }
+
         private (Image, DeviceMemory) CreateImage(int w, int h, Format format, ImageUsageFlags usage)
         {
             var ici = new ImageCreateInfo
@@ -1338,12 +1525,13 @@ namespace RaxicoreEditor.Editor.Rendering
 
         private void DestroyMesh()
         {
-            foreach (GpuSubmesh s in _submeshes)
+            foreach (GpuBatch s in _batches)
             {
                 if (s.Vbuf.Handle != 0) { _vk.DestroyBuffer(_dev, s.Vbuf, null); _vk.FreeMemory(_dev, s.Vmem, null); }
                 if (s.Ibuf.Handle != 0) { _vk.DestroyBuffer(_dev, s.Ibuf, null); _vk.FreeMemory(_dev, s.Imem, null); }
             }
-            _submeshes.Clear();
+            _batches.Clear();
+            _skinnedBatch.Clear();
             foreach (GpuTexture t in _textures)
             {
                 if (t.View.Handle != 0) _vk.DestroyImageView(_dev, t.View, null);

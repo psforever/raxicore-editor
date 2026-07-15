@@ -29,6 +29,24 @@ namespace RaxicoreEditor.Editor.Rendering
         private Point _lastPos;
         private bool _orbit, _pan;
 
+        // Off-thread rendering: the GPU submit + wait + readback runs on a background task so the UI thread
+        // (menus, orbit input, compositor) never stalls on a slow frame. Only one render is in flight at a
+        // time; _gpuLock serialises the background Render against UI-thread renderer mutations (SetMesh /
+        // Resize / texture uploads), which are infrequent. _renderInFlight is touched only on the UI thread.
+        private readonly object _gpuLock = new();
+        private bool _renderInFlight;
+
+        // Framerate-cap pacing: _lastKickSec is when the current/last frame started; _pacer is a one-shot
+        // timer that re-enters Tick exactly when the next frame is due under the cap (see RenderSettings.FrameCap).
+        private double _lastKickSec = -1;
+        private DispatcherTimer? _pacer;
+        private bool _timerBoosted;
+
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint uPeriod);
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint uPeriod);
+
         // Animation / skinning.
         private SkeletalAnimator? _animator;
         private MeshPart? _part;
@@ -94,7 +112,10 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 return;
             }
-            _renderer.SetMesh(_doc.Submeshes);
+            lock (_gpuLock)
+            {
+                _renderer.SetMesh(_doc.Submeshes);
+            }
             if (_doc is { IsPlaying: false } && _doc.ActiveClip != null)
             {
                 SkinAndUpload(_doc.AnimTime); // keep the posed frame after a re-upload
@@ -131,9 +152,19 @@ namespace RaxicoreEditor.Editor.Rendering
                 return;
             }
 
+            // Raise the OS timer resolution to ~1 ms while a 3D view is open so the framerate-cap pacer's
+            // short sub-frame waits fire on time (default Windows granularity is ~15.6 ms, which would round
+            // short waits up and undershoot the cap). Ref-counted; released in OnDetached.
+            if (OperatingSystem.IsWindows())
+            {
+                try { timeBeginPeriod(1); _timerBoosted = true; } catch { /* winmm unavailable */ }
+            }
+
             _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
             _timer.Tick += (_, _) => Tick();
             _timer.Start();
+            _pacer = new DispatcherTimer();
+            _pacer.Tick += (_, _) => { _pacer?.Stop(); Tick(); }; // one-shot framerate-cap pacer
             RenderSettings.Changed += OnRenderSettingsChanged; // sky toggle → redraw
             _needsRender = true;
         }
@@ -152,8 +183,22 @@ namespace RaxicoreEditor.Editor.Rendering
             }
             _timer?.Stop();
             _timer = null;
-            _renderer?.Dispose();
-            _renderer = null;
+            _pacer?.Stop();
+            _pacer = null;
+            if (_timerBoosted)
+            {
+                try { timeEndPeriod(1); } catch { /* balanced with timeBeginPeriod */ }
+                _timerBoosted = false;
+            }
+            // Wait out any in-flight background render (it holds _gpuLock) before tearing the renderer down,
+            // so we never destroy Vulkan objects mid-frame. A late completion post then sees a null renderer
+            // and no-ops.
+            lock (_gpuLock)
+            {
+                _renderer?.Dispose();
+                _renderer = null;
+            }
+            _renderInFlight = false;
             _bitmap?.Dispose();
             _bitmap = null;
             _pw = _ph = 0;
@@ -165,8 +210,11 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 return;
             }
-            _renderer.SetMesh(_doc.Submeshes);
-            _renderer.SetSkyTexture(_doc.SkyTextureBgra, _doc.SkyTextureWidth, _doc.SkyTextureHeight);
+            lock (_gpuLock)
+            {
+                _renderer.SetMesh(_doc.Submeshes);
+                _renderer.SetSkyTexture(_doc.SkyTextureBgra, _doc.SkyTextureWidth, _doc.SkyTextureHeight);
+            }
             _camera.Frame(_doc.BoundsMin, _doc.BoundsMax);
             BuildAnimator();
             _needsRender = true;
@@ -245,6 +293,10 @@ namespace RaxicoreEditor.Editor.Rendering
             }
             Matrix4x4[] skins = _animator.Sample(_doc.ActiveClip, time);
             int boneCount = skins.Length;
+            // Guard the per-submesh host-visible vertex writes against a concurrent background render (this
+            // runs on the UI thread, both in Tick's pre-render prep and from inspector events). Uncontended
+            // in the common Tick path.
+            lock (_gpuLock)
             foreach (int i in _skinnedIndices)
             {
                 MeshSubmesh sm = _part.Submeshes[i];
@@ -337,7 +389,10 @@ namespace RaxicoreEditor.Editor.Rendering
 
         private void Tick()
         {
-            if (_renderer == null)
+            // A background render is still in flight — leave the renderer untouched until it completes
+            // (its UI-thread continuation clears the flag). Animation time catches up on the next tick via
+            // the wall-clock delta, so skipping ticks here doesn't slow playback.
+            if (_renderer == null || _renderInFlight)
             {
                 return;
             }
@@ -364,6 +419,38 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 return;
             }
+
+            // Framerate cap: pace frames so they start no closer than 1/cap seconds apart. When the pipeline
+            // is slower than the cap the wait is already past, so it just runs at the pipeline's own rate. A
+            // cap of 0 is uncapped (render as soon as the previous frame finishes). Pacing from the frame
+            // START keeps the delivered rate at the target regardless of how long each frame takes.
+            int cap = RenderSettings.FrameCap;
+            if (cap > 0 && _pacer != null && _lastKickSec >= 0)
+            {
+                double wait = _lastKickSec + (1.0 / cap) - now;
+                // Only pace if the wait is worth a timer round-trip; for sub-2 ms waits (a cap at/above the
+                // pipeline's own rate) just render now, so high caps run at full speed instead of paying
+                // pacer overhead every frame.
+                if (wait > 0.002)
+                {
+                    // Arm the pacer ONCE and leave it alone — re-arming it (e.g. from the idle timer firing
+                    // during the wait) would restart the countdown and, with coarse OS timer granularity,
+                    // compound into a systematic undershoot. The target time is fixed (_lastKickSec is stable
+                    // until the next frame kicks), so a single wait is exact.
+                    if (!_pacer.IsEnabled)
+                    {
+                        _pacer.Interval = TimeSpan.FromSeconds(wait);
+                        _pacer.Start(); // one-shot: its Tick handler stops it and re-enters here
+                    }
+                    return;
+                }
+            }
+            _lastKickSec = now;
+            _pacer?.Stop();
+
+            // Always render at native resolution: the readback is cache-fast now and GPU time is
+            // geometry-bound (barely changes with pixel count), so full-res is only ~1 ms dearer than a
+            // downscaled frame — not worth the blur of dynamic resolution.
             double scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
             int pw = Math.Max(1, (int)(Bounds.Width * scaling));
             int ph = Math.Max(1, (int)(Bounds.Height * scaling));
@@ -402,12 +489,38 @@ namespace RaxicoreEditor.Editor.Rendering
                 _renderer.SetSky(false, Matrix4x4.Identity, Vector3.One, Vector3.Zero);
             }
 
-            if (_renderer.Render(mvp, Matrix4x4.Identity, _pixels))
+            // Hand the frame off to a background thread. The renderer's GPU submit + fence wait + readback
+            // (tens of ms on a big continent) run there instead of blocking the UI thread. All renderer
+            // state touched above is stable until the render completes, since Tick won't run again while
+            // _renderInFlight is set. _gpuLock guards against a concurrent SetMesh/Resize on the UI thread.
+            byte[] px = _pixels;
+            _needsRender = false;
+            _renderInFlight = true;
+            System.Threading.Tasks.Task.Run(() =>
             {
-                WritePixels();
-                _needsRender = false;
-                InvalidateVisual();
-            }
+                bool ok;
+                lock (_gpuLock)
+                {
+                    ok = _renderer?.Render(mvp, Matrix4x4.Identity, px) ?? false;
+                }
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (_renderer != null && ok && ReferenceEquals(px, _pixels))
+                    {
+                        WritePixels();
+                        InvalidateVisual();
+                    }
+                    _renderInFlight = false;
+                    // While the view is still changing (orbiting/panning/zooming or animating), immediately
+                    // start the next frame instead of waiting for the next timer tick — this lets the viewport
+                    // run at the full pipeline framerate (well past 60) during interaction. Tick no-ops when
+                    // there's nothing new to draw, so a settled view idles on the slow timer with no waste.
+                    if (_needsRender && _renderer != null)
+                    {
+                        Tick();
+                    }
+                });
+            });
         }
 
         private unsafe void WritePixels()

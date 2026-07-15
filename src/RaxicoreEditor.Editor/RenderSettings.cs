@@ -37,6 +37,12 @@ namespace RaxicoreEditor.Editor
         /// the viewport each frame; toggling raises <see cref="Changed"/> for a lightweight re-render.</summary>
         public static bool Sky { get; set; } = false;
 
+        /// <summary>Maximum viewport framerate in frames per second while the view is animating/being moved.
+        /// <c>0</c> = uncapped (render as fast as the pipeline allows). The viewport paces frames to this
+        /// rate; capping at (or below) the monitor's refresh avoids wasting GPU on frames the display never
+        /// shows. Read live by the viewport each frame.</summary>
+        public static int FrameCap { get; set; } = 0;
+
         /// <summary>Raised when a per-frame render setting changes (e.g. the sky toggle) so open viewports can
         /// redraw without rebuilding geometry.</summary>
         public static event Action? Changed;
