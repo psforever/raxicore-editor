@@ -455,6 +455,51 @@ namespace RaxicoreEditor.Editor.Views
             }
         }
 
+        private async void OnExportAnim(object? sender, RoutedEventArgs e)
+        {
+            if (_vm.SelectedDocument is not MeshDocument mesh || mesh.ActiveClip is not AnimRecord clip)
+            {
+                _vm.Log("Export animation: open a skinned model and select a clip first.");
+                return;
+            }
+            try
+            {
+                IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+                {
+                    Title = "Export animation data",
+                    SuggestedFileName = clip.Name + ".csv",
+                    DefaultExtension = "csv",
+                    FileTypeChoices = new[]
+                    {
+                        new FilePickerFileType("CSV") { Patterns = new[] { "*.csv" } },
+                        new FilePickerFileType("JSON") { Patterns = new[] { "*.json" } },
+                    },
+                });
+                string? path = file?.TryGetLocalPath();
+                if (string.IsNullOrEmpty(path))
+                {
+                    return;
+                }
+                string text;
+                if (path.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                {
+                    text = AnimClipExporter.ToJson(clip);
+                }
+                else
+                {
+                    using var sw = new StringWriter();
+                    AnimClipExporter.WriteCsv(clip, sw);
+                    text = sw.ToString();
+                }
+                await File.WriteAllTextAsync(path, text);
+                _vm.Log($"Exported animation '{clip.Name}' ({clip.Tracks.Count} bones) → {path}");
+            }
+            catch (Exception ex)
+            {
+                _vm.Log("animation export failed: " + ex.Message);
+            }
+        }
+
         private static void SavePng(string path, byte[] bgra, int w, int h)
         {
             var bmp = new Avalonia.Media.Imaging.WriteableBitmap(

@@ -48,6 +48,10 @@
                   ToolTip.Tip="Export the selected mesh to a Blender .blend file (requires a local Blender install).">
           <MenuItem.Header><AccessText Text="Export Mesh as _Blender (.blend)…" /></MenuItem.Header>
         </MenuItem>
+        <MenuItem Click="OnExportAnim"
+                  ToolTip.Tip="Export the active animation clip's keyframes to CSV or JSON for external analysis.">
+          <MenuItem.Header><AccessText Text="Export _Animation Data (CSV/JSON)…" /></MenuItem.Header>
+        </MenuItem>
         <Separator />
         <MenuItem Click="OnExit">
           <MenuItem.Header><AccessText Text="E_xit" /></MenuItem.Header>
