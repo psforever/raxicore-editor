@@ -1001,6 +1001,9 @@
                                  FontFamily="Cascadia Code,Consolas,monospace"
                                  Foreground="{DynamicResource TextBrush}" />
                     </Border>
+                    <ToggleButton Content="Show motion trail" IsChecked="{Binding ShowTrajectory, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch" IsVisible="{Binding HasSelectedTrack, FallbackValue=False}"
+                                  ToolTip.Tip="Draw the selected bone's path over the clip in the 3D view." />
                     <ScrollViewer MaxHeight="190" IsVisible="{Binding HasSelectedTrack, FallbackValue=False}"
                                   HorizontalScrollBarVisibility="Auto">
                       <ItemsControl ItemsSource="{Binding SelectedTrackKeys}">

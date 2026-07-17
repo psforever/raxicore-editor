@@ -9,6 +9,7 @@ using Avalonia.Platform;
 using Avalonia.Threading;
 using RaxicoreEditor.Editor.Documents;
 using RaxicoreEditor.EngineAssets.Databases;
+using RaxicoreEditor.EngineAssets.Meshes;
 
 namespace RaxicoreEditor.Editor.Rendering
 {
@@ -401,6 +402,55 @@ namespace RaxicoreEditor.Editor.Rendering
             return o;
         }
 
+        // Trajectory overlay: the selected bone's motion path over the whole clip, drawn as a poly-line in
+        // the 3D view. Rebuilt only when the toggle, clip, bone, or model actually changes (tracked by
+        // _trajSig), since it's a static curve — not a per-frame thing.
+        private static readonly Vector3 TrajectoryColor = new(0.20f, 0.85f, 1f);
+        private (bool show, AnimRecord? clip, MeshPart? part, AnimTrack? track)? _trajSig;
+
+        private void UpdateTrajectory()
+        {
+            if (_renderer == null)
+            {
+                return;
+            }
+            bool show = _doc?.ShowTrajectory ?? false;
+            AnimRecord? clip = _doc?.ActiveClip;
+            AnimTrack? track = _doc?.SelectedTrack;
+            var sig = (show, clip, _part, track);
+            if (_trajSig is { } prev && prev.Equals(sig))
+            {
+                return; // nothing that affects the path changed
+            }
+            _trajSig = sig;
+
+            int bone = (show && _animator != null && track != null) ? _animator.BoneIndex(track.Name) : -1;
+            if (!show || _animator == null || clip == null || track == null || clip.Duration <= 0f || bone < 0)
+            {
+                _renderer.ClearTrajectoryLines();
+                _needsRender = true;
+                return;
+            }
+
+            // Sample the bone's view-space joint position along the clip (matching the mesh's view space).
+            int n = Math.Clamp(_doc!.KeyframeCount, 32, 240);
+            var pts = new Vector3[n];
+            for (int i = 0; i < n; i++)
+            {
+                float t = clip.Duration * i / (n - 1);
+                pts[i] = _animator.SampleBoneWorldsViewSpace(clip, t)[bone].Translation;
+            }
+            var verts = new float[(n - 1) * 2 * 6];
+            int o = 0;
+            for (int i = 0; i < n - 1; i++)
+            {
+                o = WriteVertex(verts, o, pts[i], TrajectoryColor);
+                o = WriteVertex(verts, o, pts[i + 1], TrajectoryColor);
+            }
+            _renderer.SetTrajectoryLines(verts);
+            _needsRender = true;
+        }
+
         private void Tick()
         {
             // A background render is still in flight — leave the renderer untouched until it completes
@@ -428,6 +478,7 @@ namespace RaxicoreEditor.Editor.Rendering
             }
 
             UpdateSkeletonLines();
+            UpdateTrajectory();
 
             if (!_needsRender)
             {

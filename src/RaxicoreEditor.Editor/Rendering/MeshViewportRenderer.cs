@@ -97,6 +97,10 @@ namespace RaxicoreEditor.Editor.Rendering
         private Silk.NET.Vulkan.Buffer _boneVbuf;
         private DeviceMemory _boneVmem;
         private uint _boneVertexCount;
+        // Optional trajectory overlay (a bone's path over the clip) — same line pipeline/format as the bones.
+        private Silk.NET.Vulkan.Buffer _trajVbuf;
+        private DeviceMemory _trajVmem;
+        private uint _trajVertexCount;
 
         public MeshViewportRenderer(VulkanContext ctx)
         {
@@ -122,6 +126,7 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.DeviceWaitIdle(_dev);
             DestroyMesh();
             ClearSkeletonLines(); // a newly loaded model's skeleton (if any) is rebuilt separately
+            ClearTrajectoryLines();
             if (submeshes.Count == 0)
             {
                 return;
@@ -400,6 +405,28 @@ namespace RaxicoreEditor.Editor.Rendering
             _boneVertexCount = 0;
         }
 
+        /// <summary>Replace the trajectory line list — a bone's path over the clip, as a view-space line list
+        /// (px,py,pz, r,g,b), drawn with the same overlay pipeline as the skeleton.</summary>
+        public void SetTrajectoryLines(float[] posColor)
+        {
+            ClearTrajectoryLines();
+            uint vertexCount = (uint)(posColor.Length / 6);
+            if (vertexCount == 0)
+            {
+                return;
+            }
+            (_trajVbuf, _trajVmem) = CreateHostBuffer<float>(posColor, BufferUsageFlags.VertexBufferBit);
+            _trajVertexCount = vertexCount;
+        }
+
+        public void ClearTrajectoryLines()
+        {
+            if (_trajVbuf.Handle != 0) { _vk.DestroyBuffer(_dev, _trajVbuf, null); _vk.FreeMemory(_dev, _trajVmem, null); }
+            _trajVbuf = default;
+            _trajVmem = default;
+            _trajVertexCount = 0;
+        }
+
         // ---- offscreen sizing ------------------------------------------------------------------
 
         public void Resize(int width, int height)
@@ -587,6 +614,18 @@ namespace RaxicoreEditor.Editor.Rendering
                 var boneVbuf = _boneVbuf;
                 _vk.CmdBindVertexBuffers(_cmd, 0, 1, &boneVbuf, &boneOffset);
                 _vk.CmdDraw(_cmd, _boneVertexCount, 1, 0, 0);
+            }
+
+            if (_trajVertexCount > 0)
+            {
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _bonePipeline);
+                var trajPush = stackalloc float[16];
+                CopyMatrix(mvp, trajPush);
+                _vk.CmdPushConstants(_cmd, _bonePipelineLayout, ShaderStageFlags.VertexBit, 0, 64, trajPush);
+                ulong trajOffset = 0;
+                var trajVbuf = _trajVbuf;
+                _vk.CmdBindVertexBuffers(_cmd, 0, 1, &trajVbuf, &trajOffset);
+                _vk.CmdDraw(_cmd, _trajVertexCount, 1, 0, 0);
             }
 
             _vk.CmdEndRenderPass(_cmd);
@@ -1560,6 +1599,7 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.DeviceWaitIdle(_dev);
             DestroyMesh();
             ClearSkeletonLines();
+            ClearTrajectoryLines();
             DestroyTargets();
             if (_sampler.Handle != 0) _vk.DestroySampler(_dev, _sampler, null);
             if (_descLayout.Handle != 0) _vk.DestroyDescriptorSetLayout(_dev, _descLayout, null);

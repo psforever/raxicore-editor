@@ -573,6 +573,14 @@ namespace RaxicoreEditor.Editor.Documents
             set => SetProperty(ref _showSkeleton, value);
         }
 
+        private bool _showTrajectory;
+        /// <summary>Toggle drawing the selected bone's motion path (trajectory) over the clip in the viewport.</summary>
+        public bool ShowTrajectory
+        {
+            get => _showTrajectory;
+            set => SetProperty(ref _showTrajectory, value);
+        }
+
         /// <summary>Raised when the pose should be refreshed at the current <see cref="AnimTime"/> without a
         /// clip change — i.e. a scrub or keyframe step while paused. The viewport re-skins to that time.</summary>
         public event Action? AnimFrameChanged;
