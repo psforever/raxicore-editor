@@ -609,6 +609,8 @@ namespace RaxicoreEditor.Editor.Documents
                     RecomputeKeyframes();
                     AnimChanged?.Invoke();
                     RaisePropertyChanged(nameof(HasActiveClip));
+                    RaisePropertyChanged(nameof(ClipTracks));
+                    SelectedTrack = _activeClip is { Tracks.Count: > 0 } c ? c.Tracks[0] : null;
                 }
             }
         }
@@ -740,6 +742,70 @@ namespace RaxicoreEditor.Editor.Documents
         {
             get => _isPlaying;
             set => SetProperty(ref _isPlaying, value);
+        }
+
+        // ---- per-bone (track) inspection -------------------------------------------------------
+
+        /// <summary>A single keyframe of the selected bone, formatted for the inspector list.</summary>
+        public sealed class TrackKeyRow
+        {
+            public int Number { get; init; }
+            public float Time { get; init; }
+            public string Display { get; init; } = "";
+        }
+
+        /// <summary>The active clip's bone tracks, for the bone picker (empty when no clip is active).</summary>
+        public IReadOnlyList<AnimTrack> ClipTracks =>
+            _activeClip?.Tracks ?? (IReadOnlyList<AnimTrack>)Array.Empty<AnimTrack>();
+
+        private AnimTrack? _selectedTrack;
+        /// <summary>The bone whose keyframes are shown in the inspector.</summary>
+        public AnimTrack? SelectedTrack
+        {
+            get => _selectedTrack;
+            set
+            {
+                if (SetProperty(ref _selectedTrack, value))
+                {
+                    RebuildTrackKeys();
+                    RaisePropertyChanged(nameof(HasSelectedTrack));
+                }
+            }
+        }
+
+        public bool HasSelectedTrack => _selectedTrack != null;
+
+        /// <summary>The selected bone's keyframes (its own position + rotation key times, sampled).</summary>
+        public ObservableCollection<TrackKeyRow> SelectedTrackKeys { get; } = new();
+
+        private void RebuildTrackKeys()
+        {
+            SelectedTrackKeys.Clear();
+            if (_selectedTrack is not AnimTrack tk)
+            {
+                return;
+            }
+            // The union of this bone's own key times (a static bone still gets one row at t=0).
+            var times = new SortedSet<float>();
+            foreach (AnimKey<Vector3> k in tk.PosKeys) times.Add(k.Time);
+            foreach (AnimKey<Quaternion> k in tk.RotKeys) times.Add(k.Time);
+            if (times.Count == 0) times.Add(0f);
+
+            int n = 0;
+            foreach (float t in times)
+            {
+                Vector3 p = tk.SamplePosition(t);
+                Quaternion q = tk.SampleRotation(t);
+                n++;
+                SelectedTrackKeys.Add(new TrackKeyRow
+                {
+                    Number = n,
+                    Time = t,
+                    Display = $"#{n}  t={t:0.###}s\n" +
+                              $"  p {p.X,8:0.###} {p.Y,8:0.###} {p.Z,8:0.###}\n" +
+                              $"  q {q.X,6:0.##} {q.Y,6:0.##} {q.Z,6:0.##} {q.W,6:0.##}",
+                });
+            }
         }
 
         /// <summary>
