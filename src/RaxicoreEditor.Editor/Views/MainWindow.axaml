@@ -967,6 +967,19 @@
                     </Border>
                   </StackPanel>
 
+                  <!-- Dope sheet: bone rows × time, a tick per keyframe, draggable playhead (click to seek). -->
+                  <StackPanel Spacing="5" Margin="0,6,0,0" IsVisible="{Binding HasActiveClip, FallbackValue=False}">
+                    <TextBlock Text="DOPE SHEET" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{DynamicResource AccentTertiaryBrush}" />
+                    <Border BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1" CornerRadius="4"
+                            Background="{DynamicResource EditorBackgroundBrush}">
+                      <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto"
+                                    HorizontalScrollBarVisibility="Disabled">
+                        <controls:AnimDopeSheet Margin="2" />
+                      </ScrollViewer>
+                    </Border>
+                  </StackPanel>
+
                   <!-- Per-bone keyframe inspector: pick a bone, read its keys (time + sampled pos/rot). -->
                   <StackPanel Spacing="5" Margin="0,6,0,0" IsVisible="{Binding HasActiveClip, FallbackValue=False}">
                     <TextBlock Text="BONE KEYFRAMES" FontSize="11" FontWeight="SemiBold"
