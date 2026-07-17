@@ -643,6 +643,15 @@ namespace RaxicoreEditor.Editor.Documents
             ? $"{_animTime:0.00} s / {c.Duration:0.00} s   ·   key {CurrentKeyframe} / {KeyframeCount}"
             : "";
 
+        private string _clipStats = "";
+        /// <summary>Multi-line metadata + health summary of the active clip (duration, inferred rate,
+        /// animated-bone count, loop seamlessness), for the evaluation panel.</summary>
+        public string ClipStats
+        {
+            get => _clipStats;
+            private set => SetProperty(ref _clipStats, value);
+        }
+
         private void RecomputeKeyframes()
         {
             _keyframeTimes.Clear();
@@ -665,6 +674,26 @@ namespace RaxicoreEditor.Editor.Documents
             RaisePropertyChanged(nameof(KeyframeCount));
             RaisePropertyChanged(nameof(CurrentKeyframe));
             RaisePropertyChanged(nameof(TransportInfo));
+            ClipStats = ComputeClipStats();
+        }
+
+        private string ComputeClipStats()
+        {
+            if (_activeClip is not AnimRecord clip)
+            {
+                return "";
+            }
+            float fps = AnimClipAnalysis.InferredFps(_keyframeTimes);
+            int animated = AnimClipAnalysis.AnimatedBoneCount(clip);
+            AnimClipAnalysis.LoopSeam(clip, out float loopPos, out float loopRot);
+            // Seamless if start and end poses nearly coincide (thresholds tuned for these skeletal clips).
+            string loop = loopPos < 0.05f && loopRot < 2f
+                ? $"loops cleanly (Δ {loopPos:0.###}, {loopRot:0.#}°)"
+                : $"does not loop (Δ {loopPos:0.##}, {loopRot:0.#}°)";
+            string rate = fps > 0 ? $"~{fps:0.#} fps" : "irregular rate";
+            return $"{clip.Duration:0.00} s · {rate} · {KeyframeCount} keys\n" +
+                   $"{animated} / {clip.Tracks.Count} bones animated\n" +
+                   loop;
         }
 
         // ---- keyframe transport ----------------------------------------------------------------

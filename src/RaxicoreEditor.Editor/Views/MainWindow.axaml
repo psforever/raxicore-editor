@@ -957,6 +957,14 @@
                     <TextBlock Text="{Binding TransportInfo}" HorizontalAlignment="Center" FontSize="11"
                                FontFamily="Cascadia Code,Consolas,monospace"
                                Foreground="{DynamicResource SubtleTextBrush}" />
+                    <!-- Clip metadata + health: duration, inferred rate, animated-bone count, loop check. -->
+                    <Border Background="{DynamicResource EditorBackgroundBrush}" CornerRadius="4"
+                            Padding="8,6" Margin="0,2,0,0"
+                            BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1">
+                      <TextBlock Text="{Binding ClipStats}" FontSize="11" TextWrapping="Wrap"
+                                 FontFamily="Cascadia Code,Consolas,monospace"
+                                 Foreground="{DynamicResource SubtleTextBrush}" />
+                    </Border>
                   </StackPanel>
                 </StackPanel>
 
