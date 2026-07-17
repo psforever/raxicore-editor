@@ -589,6 +589,7 @@ namespace RaxicoreEditor.Editor.Documents
                 {
                     RaisePropertyChanged(nameof(CurrentKeyframe));
                     RaisePropertyChanged(nameof(TransportInfo));
+                    RaisePropertyChanged(nameof(SelectedTrackLive));
                     if (!_isPlaying)
                     {
                         AnimFrameChanged?.Invoke();
@@ -769,11 +770,30 @@ namespace RaxicoreEditor.Editor.Documents
                 {
                     RebuildTrackKeys();
                     RaisePropertyChanged(nameof(HasSelectedTrack));
+                    RaisePropertyChanged(nameof(SelectedTrackLive));
                 }
             }
         }
 
         public bool HasSelectedTrack => _selectedTrack != null;
+
+        /// <summary>The selected bone's transform sampled at the CURRENT <see cref="AnimTime"/> — the live
+        /// value as the clip plays or is scrubbed, for reading the pose at any instant.</summary>
+        public string SelectedTrackLive
+        {
+            get
+            {
+                if (_selectedTrack is not AnimTrack tk)
+                {
+                    return "";
+                }
+                Vector3 p = tk.SamplePosition(_animTime);
+                Quaternion q = tk.SampleRotation(_animTime);
+                return $"now @ {_animTime:0.00}s\n" +
+                       $"  p {p.X,8:0.###} {p.Y,8:0.###} {p.Z,8:0.###}\n" +
+                       $"  q {q.X,6:0.##} {q.Y,6:0.##} {q.Z,6:0.##} {q.W,6:0.##}";
+            }
+        }
 
         /// <summary>The selected bone's keyframes (its own position + rotation key times, sampled).</summary>
         public ObservableCollection<TrackKeyRow> SelectedTrackKeys { get; } = new();

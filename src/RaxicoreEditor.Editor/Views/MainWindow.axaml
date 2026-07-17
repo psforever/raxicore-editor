@@ -979,6 +979,15 @@
                         </DataTemplate>
                       </ComboBox.ItemTemplate>
                     </ComboBox>
+                    <!-- Live pose readout: the selected bone sampled at the current time (updates as the
+                         clip plays or is scrubbed/stepped). -->
+                    <Border Background="{DynamicResource PanelBackgroundBrush}" CornerRadius="4" Padding="8,6"
+                            BorderBrush="{DynamicResource AccentSecondaryBrush}" BorderThickness="1"
+                            IsVisible="{Binding HasSelectedTrack, FallbackValue=False}">
+                      <TextBlock Text="{Binding SelectedTrackLive}" FontSize="10.5"
+                                 FontFamily="Cascadia Code,Consolas,monospace"
+                                 Foreground="{DynamicResource TextBrush}" />
+                    </Border>
                     <ScrollViewer MaxHeight="190" IsVisible="{Binding HasSelectedTrack, FallbackValue=False}"
                                   HorizontalScrollBarVisibility="Auto">
                       <ItemsControl ItemsSource="{Binding SelectedTrackKeys}">
