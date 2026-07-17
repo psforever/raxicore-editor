@@ -13,9 +13,9 @@
          Assembly/File versions (0.1.0.0); VersionSuffix makes the semantic Version "0.1.0-beta";
          InformationalVersion is the friendly display string shown in the window title and the
          installer. The CI build reads VersionPrefix to name/version the NSIS installer. -->
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>0.2.0</VersionPrefix>
     <VersionSuffix>beta</VersionSuffix>
-    <InformationalVersion>0.1.0 Beta</InformationalVersion>
+    <InformationalVersion>0.2.0 Beta</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!-- Intended release license. All dependencies are MIT/Apache-2.0/OFL (no copyleft). -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
