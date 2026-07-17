@@ -925,8 +925,39 @@
                       </DataTemplate>
                     </ComboBox.ItemTemplate>
                   </ComboBox>
-                  <ToggleButton Content="Play / Pause" IsChecked="{Binding IsPlaying, Mode=TwoWay}"
-                                HorizontalAlignment="Stretch" />
+                  <!-- Transport: jump/step by keyframe, play/pause, and a scrubber. Only meaningful once a
+                       clip is selected. The keyframe steps pause playback and land on the exact key times. -->
+                  <StackPanel Spacing="6" IsVisible="{Binding HasActiveClip, FallbackValue=False}">
+                    <Grid ColumnDefinitions="*,*,*,*,*" Height="30">
+                      <Grid.Styles>
+                        <Style Selector="Button.transport, ToggleButton.transport">
+                          <Setter Property="HorizontalAlignment" Value="Stretch" />
+                          <Setter Property="HorizontalContentAlignment" Value="Center" />
+                          <Setter Property="Margin" Value="1,0" />
+                          <Setter Property="Padding" Value="0" />
+                          <Setter Property="MinWidth" Value="0" />
+                          <Setter Property="FontSize" Value="14" />
+                        </Style>
+                      </Grid.Styles>
+                      <Button Grid.Column="0" Classes="transport" Content="⏮"
+                              Command="{Binding FirstKeyframeCommand}" ToolTip.Tip="First keyframe" />
+                      <Button Grid.Column="1" Classes="transport" Content="◀"
+                              Command="{Binding PrevKeyframeCommand}" ToolTip.Tip="Previous keyframe" />
+                      <ToggleButton Grid.Column="2" Classes="transport" Content="⏯"
+                                    IsChecked="{Binding IsPlaying, Mode=TwoWay}" ToolTip.Tip="Play / Pause" />
+                      <Button Grid.Column="3" Classes="transport" Content="▶"
+                              Command="{Binding NextKeyframeCommand}" ToolTip.Tip="Next keyframe" />
+                      <Button Grid.Column="4" Classes="transport" Content="⏭"
+                              Command="{Binding LastKeyframeCommand}" ToolTip.Tip="Last keyframe" />
+                    </Grid>
+                    <Slider Minimum="0" Maximum="{Binding ActiveClip.Duration}"
+                            Value="{Binding AnimTime, Mode=TwoWay}"
+                            PointerPressed="OnScrubberPressed"
+                            ToolTip.Tip="Scrub the timeline (drag to a time; playback pauses)" />
+                    <TextBlock Text="{Binding TransportInfo}" HorizontalAlignment="Center" FontSize="11"
+                               FontFamily="Cascadia Code,Consolas,monospace"
+                               Foreground="{DynamicResource SubtleTextBrush}" />
+                  </StackPanel>
                 </StackPanel>
 
                 <!-- Skeleton overlay — any part with bones qualifies, not just vertex-skinned ones:

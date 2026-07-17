@@ -86,6 +86,7 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 _doc.GeometryChanged -= OnGeometryChanged;
                 _doc.AnimChanged -= OnAnimChanged;
+                _doc.AnimFrameChanged -= OnAnimFrameChanged;
                 _doc.TexturesChanged -= OnTexturesChanged;
             }
             _doc = DataContext as MeshDocument;
@@ -93,6 +94,7 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 _doc.GeometryChanged += OnGeometryChanged;
                 _doc.AnimChanged += OnAnimChanged;
+                _doc.AnimFrameChanged += OnAnimFrameChanged;
                 _doc.TexturesChanged += OnTexturesChanged;
             }
             UploadMesh();
@@ -129,6 +131,17 @@ namespace RaxicoreEditor.Editor.Rendering
             if (_renderer != null && _animator != null && _doc?.ActiveClip != null)
             {
                 SkinAndUpload(0f);
+                _needsRender = true;
+            }
+        }
+
+        private void OnAnimFrameChanged()
+        {
+            // A scrub or keyframe step while paused — re-pose the model at the document's current time.
+            // (The skeleton overlay refreshes on the ensuing Tick, which reads the same AnimTime.)
+            if (_renderer != null && _animator != null && _doc?.ActiveClip != null)
+            {
+                SkinAndUpload(_doc.AnimTime);
                 _needsRender = true;
             }
         }
@@ -179,6 +192,7 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 _doc.GeometryChanged -= OnGeometryChanged;
                 _doc.AnimChanged -= OnAnimChanged;
+                _doc.AnimFrameChanged -= OnAnimFrameChanged;
                 _doc.TexturesChanged -= OnTexturesChanged;
             }
             _timer?.Stop();

@@ -506,6 +506,16 @@ namespace RaxicoreEditor.Editor.Views
             }
         }
 
+        // Grabbing the animation scrubber pauses playback so the drag isn't fought by the advancing clock;
+        // the two-way bound Value then seeks + re-poses the model.
+        private void OnScrubberPressed(object? sender, PointerPressedEventArgs e)
+        {
+            if ((sender as Control)?.DataContext is MeshDocument doc)
+            {
+                doc.IsPlaying = false;
+            }
+        }
+
         // Swap one material to an empire variant (per-material NC/TR/VS buttons).
         private void OnMaterialEmpire(object? sender, RoutedEventArgs e)
         {

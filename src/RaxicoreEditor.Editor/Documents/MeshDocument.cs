@@ -573,8 +573,29 @@ namespace RaxicoreEditor.Editor.Documents
             set => SetProperty(ref _showSkeleton, value);
         }
 
-        /// <summary>Playback cursor in seconds (advanced by the viewport while playing).</summary>
-        public float AnimTime { get; set; }
+        /// <summary>Raised when the pose should be refreshed at the current <see cref="AnimTime"/> without a
+        /// clip change — i.e. a scrub or keyframe step while paused. The viewport re-skins to that time.</summary>
+        public event Action? AnimFrameChanged;
+
+        private float _animTime;
+        /// <summary>Playback cursor in seconds. The viewport advances this while playing; setting it while
+        /// paused (scrub or keyframe step) re-poses the model via <see cref="AnimFrameChanged"/>.</summary>
+        public float AnimTime
+        {
+            get => _animTime;
+            set
+            {
+                if (SetProperty(ref _animTime, value))
+                {
+                    RaisePropertyChanged(nameof(CurrentKeyframe));
+                    RaisePropertyChanged(nameof(TransportInfo));
+                    if (!_isPlaying)
+                    {
+                        AnimFrameChanged?.Invoke();
+                    }
+                }
+            }
+        }
 
         public AnimRecord? ActiveClip
         {
@@ -583,10 +604,107 @@ namespace RaxicoreEditor.Editor.Documents
             {
                 if (SetProperty(ref _activeClip, value))
                 {
-                    AnimTime = 0f;
+                    _animTime = 0f;           // reset without firing AnimFrameChanged (AnimChanged re-poses)
+                    RaisePropertyChanged(nameof(AnimTime));
+                    RecomputeKeyframes();
                     AnimChanged?.Invoke();
+                    RaisePropertyChanged(nameof(HasActiveClip));
                 }
             }
+        }
+
+        /// <summary>True when a clip is selected (transport controls only make sense with one).</summary>
+        public bool HasActiveClip => _activeClip != null;
+
+        // Distinct sorted times (seconds) of every keyframe in the active clip — the union of all tracks'
+        // position and rotation keys, plus the clip's start and end. This is the set the transport steps
+        // through, so "next/prev keyframe" lands on any time where a bone actually changes.
+        private readonly List<float> _keyframeTimes = new();
+
+        /// <summary>Number of distinct keyframes in the active clip.</summary>
+        public int KeyframeCount => _keyframeTimes.Count;
+
+        /// <summary>1-based index of the keyframe at or just before <see cref="AnimTime"/> (for display).</summary>
+        public int CurrentKeyframe
+        {
+            get
+            {
+                int idx = 0;
+                for (int i = 0; i < _keyframeTimes.Count; i++)
+                {
+                    if (_animTime + 1e-4f >= _keyframeTimes[i]) idx = i; else break;
+                }
+                return _keyframeTimes.Count == 0 ? 0 : idx + 1;
+            }
+        }
+
+        /// <summary>Compact transport readout: "t / duration · key n / total".</summary>
+        public string TransportInfo => _activeClip is AnimRecord c
+            ? $"{_animTime:0.00} s / {c.Duration:0.00} s   ·   key {CurrentKeyframe} / {KeyframeCount}"
+            : "";
+
+        private void RecomputeKeyframes()
+        {
+            _keyframeTimes.Clear();
+            if (_activeClip is AnimRecord clip)
+            {
+                var set = new SortedSet<float> { 0f };
+                if (clip.Duration > 0f) set.Add(clip.Duration);
+                foreach (AnimTrack tk in clip.Tracks)
+                {
+                    foreach (AnimKey<Vector3> k in tk.PosKeys) set.Add(k.Time);
+                    foreach (AnimKey<Quaternion> k in tk.RotKeys) set.Add(k.Time);
+                }
+                // Merge floating-point near-duplicates into one keyframe.
+                float last = float.NegativeInfinity;
+                foreach (float t in set)
+                {
+                    if (t - last > 1e-4f) { _keyframeTimes.Add(t); last = t; }
+                }
+            }
+            RaisePropertyChanged(nameof(KeyframeCount));
+            RaisePropertyChanged(nameof(CurrentKeyframe));
+            RaisePropertyChanged(nameof(TransportInfo));
+        }
+
+        // ---- keyframe transport ----------------------------------------------------------------
+
+        private RelayCommand? _firstKeyCmd, _prevKeyCmd, _nextKeyCmd, _lastKeyCmd;
+        public RelayCommand FirstKeyframeCommand => _firstKeyCmd ??= new RelayCommand(FirstKeyframe);
+        public RelayCommand PrevKeyframeCommand => _prevKeyCmd ??= new RelayCommand(PrevKeyframe);
+        public RelayCommand NextKeyframeCommand => _nextKeyCmd ??= new RelayCommand(NextKeyframe);
+        public RelayCommand LastKeyframeCommand => _lastKeyCmd ??= new RelayCommand(LastKeyframe);
+
+        public void FirstKeyframe() => SeekToKeyframe(0);
+        public void LastKeyframe() => SeekToKeyframe(_keyframeTimes.Count - 1);
+
+        /// <summary>Step to the next keyframe after the current time (wrapping to the first past the end).</summary>
+        public void NextKeyframe()
+        {
+            if (_keyframeTimes.Count == 0) return;
+            for (int i = 0; i < _keyframeTimes.Count; i++)
+            {
+                if (_keyframeTimes[i] > _animTime + 1e-4f) { SeekToKeyframe(i); return; }
+            }
+            SeekToKeyframe(0);
+        }
+
+        /// <summary>Step to the previous keyframe before the current time (wrapping to the last before the start).</summary>
+        public void PrevKeyframe()
+        {
+            if (_keyframeTimes.Count == 0) return;
+            for (int i = _keyframeTimes.Count - 1; i >= 0; i--)
+            {
+                if (_keyframeTimes[i] < _animTime - 1e-4f) { SeekToKeyframe(i); return; }
+            }
+            SeekToKeyframe(_keyframeTimes.Count - 1);
+        }
+
+        private void SeekToKeyframe(int index)
+        {
+            if (index < 0 || index >= _keyframeTimes.Count) return;
+            IsPlaying = false;              // stepping implies paused viewing
+            AnimTime = _keyframeTimes[index]; // fires AnimFrameChanged (paused) → re-pose
         }
 
         public bool IsPlaying
