@@ -1893,14 +1893,24 @@ namespace RaxicoreEditor.Editor.Documents
                 }
 
                 // Alpha-channel discipline. The opaque shader alpha-tests every textured material (needed for
-                // genuine cutouts: foliage, grates, decals). But many opaque materials — vehicle hulls, ammo
-                // boxes — store a team-colour / spec / self-illum mask in the alpha channel, not a cutout, so
-                // the test punches holes and you see straight through them. Keep the alpha only for textures
-                // whose alpha is a real cutout mask (bimodal, big fractions at both 0 and 255); for everything
-                // else force alpha opaque so nothing is discarded.
-                if (!translucent && texBgra != null && HasTransparentTexels(texBgra) && !IsCutoutAlpha(texBgra))
+                // genuine cutouts: foliage, grates, decals). But many opaque materials store a team-colour /
+                // spec / env-map-modulation mask in the alpha channel, not a cutout, so the test punches holes
+                // and you see straight through them (this is what made Vanu armour render see-through: its
+                // alpha feeds a sphere_modulatealpha shine stage). Prefer the material DB's authoritative alpha
+                // role — Cutout keeps the alpha, EffectMask forces it opaque — and only fall back to the pixel
+                // heuristic (bimodal = cutout) when the material isn't in the DB.
+                if (!translucent && texBgra != null && HasTransparentTexels(texBgra))
                 {
-                    texBgra = ForceOpaqueAlpha(texBgra);
+                    bool keepCutout = (textures.Materials?.GetAlphaRole(Material) ?? MaterialsAdb.AlphaRole.Unknown) switch
+                    {
+                        MaterialsAdb.AlphaRole.Cutout => true,
+                        MaterialsAdb.AlphaRole.EffectMask => false,
+                        _ => IsCutoutAlpha(texBgra),
+                    };
+                    if (!keepCutout)
+                    {
+                        texBgra = ForceOpaqueAlpha(texBgra);
+                    }
                 }
                 return new MeshSubmesh
                 {

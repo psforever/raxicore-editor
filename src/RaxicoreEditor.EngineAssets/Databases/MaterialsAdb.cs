@@ -27,7 +27,21 @@ namespace RaxicoreEditor.EngineAssets.Databases
     {
         /// <summary>The base texture the engine binds for a material (null for texture-less stubs), and
         /// whether the material draws translucent (<c>mat_pipeline alpha_sort/effect</c> or a blend flag).</summary>
-        public readonly record struct MaterialDef(string? Texture, bool Translucent);
+        /// <summary>How a material uses its base texture's alpha channel — read from materials.adb render
+        /// state, which is authoritative (unlike inferring opacity from the pixels).</summary>
+        public enum AlphaRole
+        {
+            /// <summary>Not stated by the DB; the caller should fall back to a pixel heuristic.</summary>
+            Unknown,
+            /// <summary>Genuine alpha-test cutout (foliage, grates): the alpha IS opacity — keep it.</summary>
+            Cutout,
+            /// <summary>The alpha feeds a texture-stage effect (sphere/cube env-map modulation — the Vanu
+            /// shiny-armour look, vehicle hulls, terminals), not opacity. The material draws fully solid, so
+            /// the alpha must be ignored (forced opaque) or the alpha test punches holes through the model.</summary>
+            EffectMask,
+        }
+
+        public readonly record struct MaterialDef(string? Texture, bool Translucent, AlphaRole Alpha);
 
         private readonly Dictionary<string, MaterialDef> _byName = new(StringComparer.OrdinalIgnoreCase);
 
@@ -85,6 +99,19 @@ namespace RaxicoreEditor.EngineAssets.Databases
             return false;
         }
 
+        /// <summary>The alpha role of a material (or its base before '+'), from the engine's render state.
+        /// Returns <see cref="AlphaRole.Unknown"/> when the material isn't in the DB — the caller then falls
+        /// back to a pixel heuristic to decide whether the alpha is a cutout.</summary>
+        public AlphaRole GetAlphaRole(string material)
+        {
+            if (string.IsNullOrEmpty(material)) return AlphaRole.Unknown;
+            if (_byName.TryGetValue(material, out MaterialDef d)) return d.Alpha;
+            int plus = material.IndexOf('+');
+            if (plus > 0 && plus + 1 < material.Length && material[plus + 1] == '_'
+                && _byName.TryGetValue(material.Substring(0, plus), out MaterialDef b)) return b.Alpha;
+            return AlphaRole.Unknown;
+        }
+
         private void Parse(byte[] data)
         {
             int adb = Find(data, "asciidatabase", 0);
@@ -127,6 +154,8 @@ namespace RaxicoreEditor.EngineAssets.Databases
         {
             string? tex1 = null, anim1 = null;
             bool translucent = false;
+            bool alphaTest = false;   // a mat_state that enables alpha testing → a genuine cutout
+            bool effectMask = false;  // a *modulatealpha* stage consumes the alpha → it isn't opacity
             int q = pos, guard = 0;
             while (q + 4 <= data.Length && guard++ < 300)
             {
@@ -141,6 +170,18 @@ namespace RaxicoreEditor.EngineAssets.Databases
                     case "mat_pipeline": { string v = Arg1(); if (v == "alpha_sort" || v == "effect") translucent = true; break; }
                     case "mat_alphablend":
                     case "mat_sortalpha": translucent = true; break;
+                    case "mat_state":
+                        if (Arg1().Contains("alphatest", StringComparison.OrdinalIgnoreCase)) alphaTest = true;
+                        break;
+                    default:
+                        // Any texture stage that modulates by alpha (sphere/cube env-map) means the base
+                        // texture's alpha is a spec/reflection mask, not a cutout.
+                        if (cmd.StartsWith("mat_stage", StringComparison.Ordinal) &&
+                            Arg1().Contains("modulatealpha", StringComparison.OrdinalIgnoreCase))
+                        {
+                            effectMask = true;
+                        }
+                        break;
                 }
                 q += 4 + (int)argc * 4;
                 if (cmd == "mat_end") break;
@@ -153,7 +194,10 @@ namespace RaxicoreEditor.EngineAssets.Databases
             //    and placeholder/debug maps, which read wrong as flat textures.
             // In each case the caller falls back to resolving the albedo from the material name instead.
             if (tex != null && IsNonAlbedo(tex)) tex = null;
-            return new MaterialDef(tex, translucent);
+            // Alpha-test (a real cutout) wins if both are somehow present; otherwise a modulation stage marks
+            // the alpha as an effect mask. Neither → Unknown, and the caller falls back to a pixel test.
+            AlphaRole alpha = alphaTest ? AlphaRole.Cutout : (effectMask ? AlphaRole.EffectMask : AlphaRole.Unknown);
+            return new MaterialDef(tex, translucent, alpha);
         }
 
         private static bool IsNonAlbedo(string texture) =>
