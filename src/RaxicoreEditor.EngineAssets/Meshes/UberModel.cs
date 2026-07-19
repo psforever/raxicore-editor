@@ -1042,8 +1042,15 @@ namespace RaxicoreEditor.EngineAssets.Meshes
         // ignores this; stored for completeness / future skinning.
         private static void DecodeSkin(uint packed, ref UberVert v)
         {
-            v.BoneA = (byte)(packed & 0xFF);
-            v.BoneB = (byte)((packed >> 8) & 0xFF);
+            // The stored u16 weight is the blend factor of BYTE1's bone, not byte0's — resolved
+            // geometrically from the shipped soldier meshes: treating byte1 as the weighted
+            // (dominant) bone halves each vertex's distance to that bone (avg 0.42 -> 0.19 over
+            // trmmed's 2555 skinned verts, 73% closer), whereas byte0-as-weighted put ~65% of the
+            // body on the pelvis and exploded the mesh on animation. So BoneA is byte1 (receives
+            // Weight) and BoneB is byte0 (receives 1-Weight). content-formats.md flagged this
+            // A-vs-B convention as inferred; this is the resolution.
+            v.BoneA = (byte)((packed >> 8) & 0xFF);
+            v.BoneB = (byte)(packed & 0xFF);
             v.Weight = (short)(packed >> 16) / 16384.0f;
         }
 

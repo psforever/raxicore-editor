@@ -56,6 +56,9 @@ namespace RaxicoreEditor.Editor.Rendering
 
         public int BoneCount => _skel.Bones.Count;
 
+        /// <summary>Index of a bone by name, or -1 if this skeleton has no such bone.</summary>
+        public int BoneIndex(string name) => _boneByName.TryGetValue(name, out int i) ? i : -1;
+
         private readonly Matrix4x4[] _animWorldScratch;
         private readonly Matrix4x4[] _boneWorldView; // reused output buffer for SampleBoneWorldsViewSpace
 

@@ -93,10 +93,19 @@ namespace RaxicoreEditor.Editor.Rendering
 
         // Optional skeleton-overlay line list (position+color per vertex; drawn after the mesh).
         private PipelineLayout _bonePipelineLayout;
-        private Pipeline _bonePipeline;
+        private Pipeline _bonePipeline;      // depth-tested: bones are hidden behind opaque geometry
+        private Pipeline _bonePipelineXray;  // depth test off: bones drawn through the model (x-ray)
         private Silk.NET.Vulkan.Buffer _boneVbuf;
         private DeviceMemory _boneVmem;
         private uint _boneVertexCount;
+
+        /// <summary>When true, the skeleton overlay is drawn through the mesh (no depth test) instead of
+        /// being occluded by it. Toggled from the viewport; only affects the bone lines, not the trajectory.</summary>
+        public bool SkeletonXray { get; set; }
+        // Optional trajectory overlay (a bone's path over the clip) — same line pipeline/format as the bones.
+        private Silk.NET.Vulkan.Buffer _trajVbuf;
+        private DeviceMemory _trajVmem;
+        private uint _trajVertexCount;
 
         public MeshViewportRenderer(VulkanContext ctx)
         {
@@ -122,6 +131,7 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.DeviceWaitIdle(_dev);
             DestroyMesh();
             ClearSkeletonLines(); // a newly loaded model's skeleton (if any) is rebuilt separately
+            ClearTrajectoryLines();
             if (submeshes.Count == 0)
             {
                 return;
@@ -400,6 +410,28 @@ namespace RaxicoreEditor.Editor.Rendering
             _boneVertexCount = 0;
         }
 
+        /// <summary>Replace the trajectory line list — a bone's path over the clip, as a view-space line list
+        /// (px,py,pz, r,g,b), drawn with the same overlay pipeline as the skeleton.</summary>
+        public void SetTrajectoryLines(float[] posColor)
+        {
+            ClearTrajectoryLines();
+            uint vertexCount = (uint)(posColor.Length / 6);
+            if (vertexCount == 0)
+            {
+                return;
+            }
+            (_trajVbuf, _trajVmem) = CreateHostBuffer<float>(posColor, BufferUsageFlags.VertexBufferBit);
+            _trajVertexCount = vertexCount;
+        }
+
+        public void ClearTrajectoryLines()
+        {
+            if (_trajVbuf.Handle != 0) { _vk.DestroyBuffer(_dev, _trajVbuf, null); _vk.FreeMemory(_dev, _trajVmem, null); }
+            _trajVbuf = default;
+            _trajVmem = default;
+            _trajVertexCount = 0;
+        }
+
         // ---- offscreen sizing ------------------------------------------------------------------
 
         public void Resize(int width, int height)
@@ -579,7 +611,8 @@ namespace RaxicoreEditor.Editor.Rendering
 
             if (_boneVertexCount > 0)
             {
-                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _bonePipeline);
+                Pipeline bonePipe = SkeletonXray && _bonePipelineXray.Handle != 0 ? _bonePipelineXray : _bonePipeline;
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, bonePipe);
                 var bonePush = stackalloc float[16];
                 CopyMatrix(mvp, bonePush);
                 _vk.CmdPushConstants(_cmd, _bonePipelineLayout, ShaderStageFlags.VertexBit, 0, 64, bonePush);
@@ -587,6 +620,18 @@ namespace RaxicoreEditor.Editor.Rendering
                 var boneVbuf = _boneVbuf;
                 _vk.CmdBindVertexBuffers(_cmd, 0, 1, &boneVbuf, &boneOffset);
                 _vk.CmdDraw(_cmd, _boneVertexCount, 1, 0, 0);
+            }
+
+            if (_trajVertexCount > 0)
+            {
+                _vk.CmdBindPipeline(_cmd, PipelineBindPoint.Graphics, _bonePipeline);
+                var trajPush = stackalloc float[16];
+                CopyMatrix(mvp, trajPush);
+                _vk.CmdPushConstants(_cmd, _bonePipelineLayout, ShaderStageFlags.VertexBit, 0, 64, trajPush);
+                ulong trajOffset = 0;
+                var trajVbuf = _trajVbuf;
+                _vk.CmdBindVertexBuffers(_cmd, 0, 1, &trajVbuf, &trajOffset);
+                _vk.CmdDraw(_cmd, _trajVertexCount, 1, 0, 0);
             }
 
             _vk.CmdEndRenderPass(_cmd);
@@ -1342,6 +1387,16 @@ namespace RaxicoreEditor.Editor.Rendering
                 "CreateGraphicsPipelines(bone)");
             _bonePipeline = pipeline;
 
+            // Second variant for x-ray mode: identical, but with the depth test off so the bones draw
+            // through the model. gp.PDepthStencilState still points at `ds`, so mutating it and rebuilding
+            // yields the no-depth-test pipeline.
+            ds.DepthTestEnable = false;
+            ds.DepthCompareOp = CompareOp.Always;
+            Pipeline pipelineXray;
+            VulkanContext.Check(_vk.CreateGraphicsPipelines(_dev, default, 1, &gp, null, &pipelineXray),
+                "CreateGraphicsPipelines(bone-xray)");
+            _bonePipelineXray = pipelineXray;
+
             _vk.DestroyShaderModule(_dev, vs, null);
             _vk.DestroyShaderModule(_dev, fs, null);
             Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
@@ -1560,6 +1615,7 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.DeviceWaitIdle(_dev);
             DestroyMesh();
             ClearSkeletonLines();
+            ClearTrajectoryLines();
             DestroyTargets();
             if (_sampler.Handle != 0) _vk.DestroySampler(_dev, _sampler, null);
             if (_descLayout.Handle != 0) _vk.DestroyDescriptorSetLayout(_dev, _descLayout, null);
@@ -1579,6 +1635,7 @@ namespace RaxicoreEditor.Editor.Rendering
             if (_skyPipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _skyPipelineLayout, null);
             if (_pipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _pipelineLayout, null);
             if (_bonePipeline.Handle != 0) _vk.DestroyPipeline(_dev, _bonePipeline, null);
+            if (_bonePipelineXray.Handle != 0) _vk.DestroyPipeline(_dev, _bonePipelineXray, null);
             if (_bonePipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _bonePipelineLayout, null);
             if (_renderPass.Handle != 0) _vk.DestroyRenderPass(_dev, _renderPass, null);
         }

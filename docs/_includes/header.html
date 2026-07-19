@@ -7,6 +7,7 @@
     <nav class="nav">
       <a class="nav__link{% if page.url == '/' %} is-active{% endif %}" href="{{ '/' | relative_url }}">Home</a>
       <a class="nav__link{% if page.url contains '/formats' %} is-active{% endif %}" href="{{ '/formats/' | relative_url }}">Formats</a>
+      <a class="nav__link{% if page.url contains '/godot' %} is-active{% endif %}" href="{{ '/godot/' | relative_url }}">Godot</a>
       <a class="nav__link{% if page.url contains '/building' %} is-active{% endif %}" href="{{ '/building/' | relative_url }}">Building</a>
       <a class="nav__link nav__link--icon" href="https://github.com/{{ site.repository }}" target="_blank" rel="noopener">
         GitHub ↗

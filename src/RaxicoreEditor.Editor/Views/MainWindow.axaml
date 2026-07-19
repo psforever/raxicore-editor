@@ -48,6 +48,10 @@
                   ToolTip.Tip="Export the selected mesh to a Blender .blend file (requires a local Blender install).">
           <MenuItem.Header><AccessText Text="Export Mesh as _Blender (.blend)…" /></MenuItem.Header>
         </MenuItem>
+        <MenuItem Click="OnExportAnim"
+                  ToolTip.Tip="Export the active animation clip's keyframes to CSV or JSON for external analysis.">
+          <MenuItem.Header><AccessText Text="Export _Animation Data (CSV/JSON)…" /></MenuItem.Header>
+        </MenuItem>
         <Separator />
         <MenuItem Click="OnExit">
           <MenuItem.Header><AccessText Text="E_xit" /></MenuItem.Header>
@@ -543,6 +547,32 @@
           <TextBlock Text="{Binding Summary}" Foreground="#d2d6dd" FontSize="12" />
           <TextBlock Text="LMB orbit · RMB/MMB pan · wheel zoom" Foreground="#9aa1ac" FontSize="11" />
         </StackPanel>
+
+        <!-- Bone-hierarchy window: a floating panel over the viewport listing the selected part's skeleton
+             as a parent→child tree. Shown only when the part has a skeleton (BoneTreeVisible). -->
+        <Border VerticalAlignment="Top" HorizontalAlignment="Right" Margin="10"
+                Width="240" MaxHeight="480" CornerRadius="6" Padding="0"
+                Background="#e61b1e24" BorderBrush="#33ffffff" BorderThickness="1"
+                IsVisible="{Binding BoneTreeVisible, FallbackValue=False}">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Text="BONE HIERARCHY" FontSize="11" FontWeight="SemiBold"
+                       Foreground="{DynamicResource AccentTertiaryBrush}" Margin="10,8,10,6" />
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+              <TreeView ItemsSource="{Binding BoneTree}" Background="Transparent" Padding="4,0,4,8">
+                <TreeView.Styles>
+                  <Style Selector="TreeViewItem">
+                    <Setter Property="IsExpanded" Value="True" />
+                  </Style>
+                </TreeView.Styles>
+                <TreeView.ItemTemplate>
+                  <TreeDataTemplate ItemsSource="{Binding Children}">
+                    <TextBlock Text="{Binding Name}" FontSize="12" Foreground="#d2d6dd" />
+                  </TreeDataTemplate>
+                </TreeView.ItemTemplate>
+              </TreeView>
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
       </Grid>
     </DataTemplate>
     <DataTemplate DataType="doc:AnimDocument">
@@ -925,8 +955,98 @@
                       </DataTemplate>
                     </ComboBox.ItemTemplate>
                   </ComboBox>
-                  <ToggleButton Content="Play / Pause" IsChecked="{Binding IsPlaying, Mode=TwoWay}"
-                                HorizontalAlignment="Stretch" />
+                  <!-- Transport: jump/step by keyframe, play/pause, and a scrubber. Only meaningful once a
+                       clip is selected. The keyframe steps pause playback and land on the exact key times. -->
+                  <StackPanel Spacing="6" IsVisible="{Binding HasActiveClip, FallbackValue=False}">
+                    <Grid ColumnDefinitions="*,*,*,*,*" Height="30">
+                      <Grid.Styles>
+                        <Style Selector="Button.transport, ToggleButton.transport">
+                          <Setter Property="HorizontalAlignment" Value="Stretch" />
+                          <Setter Property="HorizontalContentAlignment" Value="Center" />
+                          <Setter Property="Margin" Value="1,0" />
+                          <Setter Property="Padding" Value="0" />
+                          <Setter Property="MinWidth" Value="0" />
+                          <Setter Property="FontSize" Value="14" />
+                        </Style>
+                      </Grid.Styles>
+                      <Button Grid.Column="0" Classes="transport" Content="⏮"
+                              Command="{Binding FirstKeyframeCommand}" ToolTip.Tip="First keyframe" />
+                      <Button Grid.Column="1" Classes="transport" Content="◀"
+                              Command="{Binding PrevKeyframeCommand}" ToolTip.Tip="Previous keyframe" />
+                      <ToggleButton Grid.Column="2" Classes="transport" Content="⏯"
+                                    IsChecked="{Binding IsPlaying, Mode=TwoWay}" ToolTip.Tip="Play / Pause" />
+                      <Button Grid.Column="3" Classes="transport" Content="▶"
+                              Command="{Binding NextKeyframeCommand}" ToolTip.Tip="Next keyframe" />
+                      <Button Grid.Column="4" Classes="transport" Content="⏭"
+                              Command="{Binding LastKeyframeCommand}" ToolTip.Tip="Last keyframe" />
+                    </Grid>
+                    <Slider Minimum="0" Maximum="{Binding ActiveClip.Duration}"
+                            Value="{Binding AnimTime, Mode=TwoWay}"
+                            PointerPressed="OnScrubberPressed"
+                            ToolTip.Tip="Scrub the timeline (drag to a time; playback pauses)" />
+                    <TextBlock Text="{Binding TransportInfo}" HorizontalAlignment="Center" FontSize="11"
+                               FontFamily="Cascadia Code,Consolas,monospace"
+                               Foreground="{DynamicResource SubtleTextBrush}" />
+                    <!-- Clip metadata + health: duration, inferred rate, animated-bone count, loop check. -->
+                    <Border Background="{DynamicResource EditorBackgroundBrush}" CornerRadius="4"
+                            Padding="8,6" Margin="0,2,0,0"
+                            BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1">
+                      <TextBlock Text="{Binding ClipStats}" FontSize="11" TextWrapping="Wrap"
+                                 FontFamily="Cascadia Code,Consolas,monospace"
+                                 Foreground="{DynamicResource SubtleTextBrush}" />
+                    </Border>
+                  </StackPanel>
+
+                  <!-- Dope sheet: bone rows × time, a tick per keyframe, draggable playhead (click to seek). -->
+                  <StackPanel Spacing="5" Margin="0,6,0,0" IsVisible="{Binding HasActiveClip, FallbackValue=False}">
+                    <TextBlock Text="DOPE SHEET" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{DynamicResource AccentTertiaryBrush}" />
+                    <Border BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="1" CornerRadius="4"
+                            Background="{DynamicResource EditorBackgroundBrush}">
+                      <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto"
+                                    HorizontalScrollBarVisibility="Disabled">
+                        <controls:AnimDopeSheet Margin="2" />
+                      </ScrollViewer>
+                    </Border>
+                  </StackPanel>
+
+                  <!-- Per-bone keyframe inspector: pick a bone, read its keys (time + sampled pos/rot). -->
+                  <StackPanel Spacing="5" Margin="0,6,0,0" IsVisible="{Binding HasActiveClip, FallbackValue=False}">
+                    <TextBlock Text="BONE KEYFRAMES" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{DynamicResource AccentTertiaryBrush}" />
+                    <ComboBox ItemsSource="{Binding ClipTracks}" SelectedItem="{Binding SelectedTrack, Mode=TwoWay}"
+                              PlaceholderText="select a bone" HorizontalAlignment="Stretch">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding Name}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <!-- Live pose readout: the selected bone sampled at the current time (updates as the
+                         clip plays or is scrubbed/stepped). -->
+                    <Border Background="{DynamicResource PanelBackgroundBrush}" CornerRadius="4" Padding="8,6"
+                            BorderBrush="{DynamicResource AccentSecondaryBrush}" BorderThickness="1"
+                            IsVisible="{Binding HasSelectedTrack, FallbackValue=False}">
+                      <TextBlock Text="{Binding SelectedTrackLive}" FontSize="10.5"
+                                 FontFamily="Cascadia Code,Consolas,monospace"
+                                 Foreground="{DynamicResource TextBrush}" />
+                    </Border>
+                    <ToggleButton Content="Show motion trail" IsChecked="{Binding ShowTrajectory, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch" IsVisible="{Binding HasSelectedTrack, FallbackValue=False}"
+                                  ToolTip.Tip="Draw the selected bone's path over the clip in the 3D view." />
+                    <ScrollViewer MaxHeight="190" IsVisible="{Binding HasSelectedTrack, FallbackValue=False}"
+                                  HorizontalScrollBarVisibility="Auto">
+                      <ItemsControl ItemsSource="{Binding SelectedTrackKeys}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate>
+                            <TextBlock Text="{Binding Display}" FontSize="10.5" Margin="0,0,0,3"
+                                       FontFamily="Cascadia Code,Consolas,monospace"
+                                       Foreground="{DynamicResource TextBrush}" />
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </ScrollViewer>
+                  </StackPanel>
                 </StackPanel>
 
                 <!-- Skeleton overlay — any part with bones qualifies, not just vertex-skinned ones:
@@ -936,8 +1056,20 @@
                             IsVisible="{Binding HasSkeleton, FallbackValue=False}">
                   <TextBlock Text="SKELETON" FontSize="11" FontWeight="SemiBold"
                              Foreground="{DynamicResource AccentTertiaryBrush}" />
-                  <ToggleButton Content="Show Bones" IsChecked="{Binding ShowSkeleton, Mode=TwoWay}"
+                  <!-- Bone Tree shows/hides the bone-hierarchy window floating over the viewport. -->
+                  <ToggleButton Content="Bone Tree" IsChecked="{Binding ShowBoneTree, Mode=TwoWay}"
                                 HorizontalAlignment="Stretch" />
+                  <!-- Show Bones toggles the skeleton overlay; X-Ray (only meaningful when bones are shown)
+                       toggles whether the bones draw through the model or are occluded by geometry. -->
+                  <Grid ColumnDefinitions="*,Auto">
+                    <ToggleButton Grid.Column="0" Content="Show Bones"
+                                  IsChecked="{Binding ShowSkeleton, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch" />
+                    <ToggleButton Grid.Column="1" Margin="6,0,0,0" Content="X-Ray"
+                                  IsChecked="{Binding SkeletonXray, Mode=TwoWay}"
+                                  IsEnabled="{Binding ShowSkeleton}"
+                                  ToolTip.Tip="Draw the bones through the model instead of letting geometry hide them." />
+                  </Grid>
                 </StackPanel>
               </StackPanel>
             </ScrollViewer>

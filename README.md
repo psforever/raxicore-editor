@@ -25,6 +25,8 @@ content formats used by an engine-derived client.
 
 <img src="docs/assets/img/screenshot.png" alt="Raxicore Editor showing a continent — terrain, water, and scene objects in the 3D viewport, with the asset browser and inspector" width="900" />
 
+<img src="docs/assets/img/animation.gif" alt="Raxicore Editor playing a skeletal animation in the 3D viewport, with keyframe transport and timeline scrubbing in the inspector" width="900" />
+
 ## Features
 
 - **Asset browser** — mount a folder or open an archive; a role-grouped catalog (Continents, Models,

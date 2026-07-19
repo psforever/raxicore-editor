@@ -125,6 +125,14 @@ namespace RaxicoreEditor.Editor.Documents
         public override string ToString() => Display;
     }
 
+    /// <summary>One node in the viewport's bone-hierarchy tree: a bone name plus its child bones, built from
+    /// the selected part's skeleton (parent → children). Bound directly by the TreeView.</summary>
+    public sealed class BoneTreeNode
+    {
+        public string Name { get; init; } = "";
+        public ObservableCollection<BoneTreeNode> Children { get; } = new();
+    }
+
     /// <summary>
     /// 3D document (UberMesh). Decodes every CMeshSystem via the faithful <see cref="UberModel"/> pool
     /// parser into selectable <see cref="MeshPart"/>s, each split into per-material <see cref="MeshSubmesh"/>es
@@ -273,6 +281,8 @@ namespace RaxicoreEditor.Editor.Documents
                     RaisePropertyChanged(nameof(PartInfo));
                     RaisePropertyChanged(nameof(CanAnimate));
                     RaisePropertyChanged(nameof(HasSkeleton));
+                    RebuildBoneTree();
+                    RaisePropertyChanged(nameof(BoneTreeVisible));
                     RebuildMaterials();
                     if (AnimSource != null) SetAnimSource(AnimSource); // re-filter clips for the new skeleton
                     GeometryChanged?.Invoke();
@@ -573,8 +583,88 @@ namespace RaxicoreEditor.Editor.Documents
             set => SetProperty(ref _showSkeleton, value);
         }
 
-        /// <summary>Playback cursor in seconds (advanced by the viewport while playing).</summary>
-        public float AnimTime { get; set; }
+        private bool _skeletonXray;
+        /// <summary>When the skeleton overlay is shown, draw the bones through the model (no depth test)
+        /// instead of letting geometry occlude them. Paired with <see cref="ShowSkeleton"/> in the UI.</summary>
+        public bool SkeletonXray
+        {
+            get => _skeletonXray;
+            set => SetProperty(ref _skeletonXray, value);
+        }
+
+        /// <summary>Root bones of the selected part's skeleton, each nesting its children — the data behind
+        /// the viewport's bone-hierarchy tree window. Rebuilt whenever the selected part changes.</summary>
+        public ObservableCollection<BoneTreeNode> BoneTree { get; } = new();
+
+        private bool _showBoneTree = true;
+        /// <summary>Whether the viewport's bone-hierarchy tree window is shown (only appears when the selected
+        /// part actually has a skeleton — see <see cref="BoneTreeVisible"/>).</summary>
+        public bool ShowBoneTree
+        {
+            get => _showBoneTree;
+            set { if (SetProperty(ref _showBoneTree, value)) RaisePropertyChanged(nameof(BoneTreeVisible)); }
+        }
+
+        /// <summary>The bone-tree window is visible only when the part has a skeleton and the toggle is on.</summary>
+        public bool BoneTreeVisible => HasSkeleton && _showBoneTree;
+
+        // Rebuild the bone-hierarchy tree from the selected part's skeleton (parent index → child nodes).
+        private void RebuildBoneTree()
+        {
+            BoneTree.Clear();
+            UberModel.Skeleton? skel = _selectedPart?.Skeleton;
+            if (skel == null) return;
+            var nodes = new BoneTreeNode[skel.Bones.Count];
+            for (int i = 0; i < skel.Bones.Count; i++)
+            {
+                nodes[i] = new BoneTreeNode { Name = skel.Bones[i].Name };
+            }
+            for (int i = 0; i < skel.Bones.Count; i++)
+            {
+                int p = skel.Bones[i].Parent;
+                if (p >= 0 && p < nodes.Length && p != i)
+                {
+                    nodes[p].Children.Add(nodes[i]);
+                }
+                else
+                {
+                    BoneTree.Add(nodes[i]); // root (or an out-of-range parent — treat as a root)
+                }
+            }
+        }
+
+        private bool _showTrajectory;
+        /// <summary>Toggle drawing the selected bone's motion path (trajectory) over the clip in the viewport.</summary>
+        public bool ShowTrajectory
+        {
+            get => _showTrajectory;
+            set => SetProperty(ref _showTrajectory, value);
+        }
+
+        /// <summary>Raised when the pose should be refreshed at the current <see cref="AnimTime"/> without a
+        /// clip change — i.e. a scrub or keyframe step while paused. The viewport re-skins to that time.</summary>
+        public event Action? AnimFrameChanged;
+
+        private float _animTime;
+        /// <summary>Playback cursor in seconds. The viewport advances this while playing; setting it while
+        /// paused (scrub or keyframe step) re-poses the model via <see cref="AnimFrameChanged"/>.</summary>
+        public float AnimTime
+        {
+            get => _animTime;
+            set
+            {
+                if (SetProperty(ref _animTime, value))
+                {
+                    RaisePropertyChanged(nameof(CurrentKeyframe));
+                    RaisePropertyChanged(nameof(TransportInfo));
+                    RaisePropertyChanged(nameof(SelectedTrackLive));
+                    if (!_isPlaying)
+                    {
+                        AnimFrameChanged?.Invoke();
+                    }
+                }
+            }
+        }
 
         public AnimRecord? ActiveClip
         {
@@ -583,16 +673,227 @@ namespace RaxicoreEditor.Editor.Documents
             {
                 if (SetProperty(ref _activeClip, value))
                 {
-                    AnimTime = 0f;
+                    _animTime = 0f;           // reset without firing AnimFrameChanged (AnimChanged re-poses)
+                    RaisePropertyChanged(nameof(AnimTime));
+                    RecomputeKeyframes();
                     AnimChanged?.Invoke();
+                    RaisePropertyChanged(nameof(HasActiveClip));
+                    RaisePropertyChanged(nameof(ClipTracks));
+                    SelectedTrack = _activeClip is { Tracks.Count: > 0 } c ? c.Tracks[0] : null;
                 }
             }
+        }
+
+        /// <summary>True when a clip is selected (transport controls only make sense with one).</summary>
+        public bool HasActiveClip => _activeClip != null;
+
+        // Distinct sorted times (seconds) of every keyframe in the active clip — the union of all tracks'
+        // position and rotation keys, plus the clip's start and end. This is the set the transport steps
+        // through, so "next/prev keyframe" lands on any time where a bone actually changes.
+        private readonly List<float> _keyframeTimes = new();
+
+        /// <summary>Number of distinct keyframes in the active clip.</summary>
+        public int KeyframeCount => _keyframeTimes.Count;
+
+        /// <summary>1-based index of the keyframe at or just before <see cref="AnimTime"/> (for display).</summary>
+        public int CurrentKeyframe
+        {
+            get
+            {
+                int idx = 0;
+                for (int i = 0; i < _keyframeTimes.Count; i++)
+                {
+                    if (_animTime + 1e-4f >= _keyframeTimes[i]) idx = i; else break;
+                }
+                return _keyframeTimes.Count == 0 ? 0 : idx + 1;
+            }
+        }
+
+        /// <summary>Compact transport readout: "t / duration · key n / total".</summary>
+        public string TransportInfo => _activeClip is AnimRecord c
+            ? $"{_animTime:0.00} s / {c.Duration:0.00} s   ·   key {CurrentKeyframe} / {KeyframeCount}"
+            : "";
+
+        private string _clipStats = "";
+        /// <summary>Multi-line metadata + health summary of the active clip (duration, inferred rate,
+        /// animated-bone count, loop seamlessness), for the evaluation panel.</summary>
+        public string ClipStats
+        {
+            get => _clipStats;
+            private set => SetProperty(ref _clipStats, value);
+        }
+
+        private void RecomputeKeyframes()
+        {
+            _keyframeTimes.Clear();
+            if (_activeClip is AnimRecord clip)
+            {
+                var set = new SortedSet<float> { 0f };
+                if (clip.Duration > 0f) set.Add(clip.Duration);
+                foreach (AnimTrack tk in clip.Tracks)
+                {
+                    foreach (AnimKey<Vector3> k in tk.PosKeys) set.Add(k.Time);
+                    foreach (AnimKey<Quaternion> k in tk.RotKeys) set.Add(k.Time);
+                }
+                // Merge floating-point near-duplicates into one keyframe.
+                float last = float.NegativeInfinity;
+                foreach (float t in set)
+                {
+                    if (t - last > 1e-4f) { _keyframeTimes.Add(t); last = t; }
+                }
+            }
+            RaisePropertyChanged(nameof(KeyframeCount));
+            RaisePropertyChanged(nameof(CurrentKeyframe));
+            RaisePropertyChanged(nameof(TransportInfo));
+            ClipStats = ComputeClipStats();
+        }
+
+        private string ComputeClipStats()
+        {
+            if (_activeClip is not AnimRecord clip)
+            {
+                return "";
+            }
+            float fps = AnimClipAnalysis.InferredFps(_keyframeTimes);
+            int animated = AnimClipAnalysis.AnimatedBoneCount(clip);
+            AnimClipAnalysis.LoopSeam(clip, out float loopPos, out float loopRot);
+            // Seamless if start and end poses nearly coincide (thresholds tuned for these skeletal clips).
+            string loop = loopPos < 0.05f && loopRot < 2f
+                ? $"loops cleanly (Δ {loopPos:0.###}, {loopRot:0.#}°)"
+                : $"does not loop (Δ {loopPos:0.##}, {loopRot:0.#}°)";
+            string rate = fps > 0 ? $"~{fps:0.#} fps" : "irregular rate";
+            return $"{clip.Duration:0.00} s · {rate} · {KeyframeCount} keys\n" +
+                   $"{animated} / {clip.Tracks.Count} bones animated\n" +
+                   loop;
+        }
+
+        // ---- keyframe transport ----------------------------------------------------------------
+
+        private RelayCommand? _firstKeyCmd, _prevKeyCmd, _nextKeyCmd, _lastKeyCmd;
+        public RelayCommand FirstKeyframeCommand => _firstKeyCmd ??= new RelayCommand(FirstKeyframe);
+        public RelayCommand PrevKeyframeCommand => _prevKeyCmd ??= new RelayCommand(PrevKeyframe);
+        public RelayCommand NextKeyframeCommand => _nextKeyCmd ??= new RelayCommand(NextKeyframe);
+        public RelayCommand LastKeyframeCommand => _lastKeyCmd ??= new RelayCommand(LastKeyframe);
+
+        public void FirstKeyframe() => SeekToKeyframe(0);
+        public void LastKeyframe() => SeekToKeyframe(_keyframeTimes.Count - 1);
+
+        /// <summary>Step to the next keyframe after the current time (wrapping to the first past the end).</summary>
+        public void NextKeyframe()
+        {
+            if (_keyframeTimes.Count == 0) return;
+            for (int i = 0; i < _keyframeTimes.Count; i++)
+            {
+                if (_keyframeTimes[i] > _animTime + 1e-4f) { SeekToKeyframe(i); return; }
+            }
+            SeekToKeyframe(0);
+        }
+
+        /// <summary>Step to the previous keyframe before the current time (wrapping to the last before the start).</summary>
+        public void PrevKeyframe()
+        {
+            if (_keyframeTimes.Count == 0) return;
+            for (int i = _keyframeTimes.Count - 1; i >= 0; i--)
+            {
+                if (_keyframeTimes[i] < _animTime - 1e-4f) { SeekToKeyframe(i); return; }
+            }
+            SeekToKeyframe(_keyframeTimes.Count - 1);
+        }
+
+        private void SeekToKeyframe(int index)
+        {
+            if (index < 0 || index >= _keyframeTimes.Count) return;
+            IsPlaying = false;              // stepping implies paused viewing
+            AnimTime = _keyframeTimes[index]; // fires AnimFrameChanged (paused) → re-pose
         }
 
         public bool IsPlaying
         {
             get => _isPlaying;
             set => SetProperty(ref _isPlaying, value);
+        }
+
+        // ---- per-bone (track) inspection -------------------------------------------------------
+
+        /// <summary>A single keyframe of the selected bone, formatted for the inspector list.</summary>
+        public sealed class TrackKeyRow
+        {
+            public int Number { get; init; }
+            public float Time { get; init; }
+            public string Display { get; init; } = "";
+        }
+
+        /// <summary>The active clip's bone tracks, for the bone picker (empty when no clip is active).</summary>
+        public IReadOnlyList<AnimTrack> ClipTracks =>
+            _activeClip?.Tracks ?? (IReadOnlyList<AnimTrack>)Array.Empty<AnimTrack>();
+
+        private AnimTrack? _selectedTrack;
+        /// <summary>The bone whose keyframes are shown in the inspector.</summary>
+        public AnimTrack? SelectedTrack
+        {
+            get => _selectedTrack;
+            set
+            {
+                if (SetProperty(ref _selectedTrack, value))
+                {
+                    RebuildTrackKeys();
+                    RaisePropertyChanged(nameof(HasSelectedTrack));
+                    RaisePropertyChanged(nameof(SelectedTrackLive));
+                }
+            }
+        }
+
+        public bool HasSelectedTrack => _selectedTrack != null;
+
+        /// <summary>The selected bone's transform sampled at the CURRENT <see cref="AnimTime"/> — the live
+        /// value as the clip plays or is scrubbed, for reading the pose at any instant.</summary>
+        public string SelectedTrackLive
+        {
+            get
+            {
+                if (_selectedTrack is not AnimTrack tk)
+                {
+                    return "";
+                }
+                Vector3 p = tk.SamplePosition(_animTime);
+                Quaternion q = tk.SampleRotation(_animTime);
+                return $"now @ {_animTime:0.00}s\n" +
+                       $"  p {p.X,8:0.###} {p.Y,8:0.###} {p.Z,8:0.###}\n" +
+                       $"  q {q.X,6:0.##} {q.Y,6:0.##} {q.Z,6:0.##} {q.W,6:0.##}";
+            }
+        }
+
+        /// <summary>The selected bone's keyframes (its own position + rotation key times, sampled).</summary>
+        public ObservableCollection<TrackKeyRow> SelectedTrackKeys { get; } = new();
+
+        private void RebuildTrackKeys()
+        {
+            SelectedTrackKeys.Clear();
+            if (_selectedTrack is not AnimTrack tk)
+            {
+                return;
+            }
+            // The union of this bone's own key times (a static bone still gets one row at t=0).
+            var times = new SortedSet<float>();
+            foreach (AnimKey<Vector3> k in tk.PosKeys) times.Add(k.Time);
+            foreach (AnimKey<Quaternion> k in tk.RotKeys) times.Add(k.Time);
+            if (times.Count == 0) times.Add(0f);
+
+            int n = 0;
+            foreach (float t in times)
+            {
+                Vector3 p = tk.SamplePosition(t);
+                Quaternion q = tk.SampleRotation(t);
+                n++;
+                SelectedTrackKeys.Add(new TrackKeyRow
+                {
+                    Number = n,
+                    Time = t,
+                    Display = $"#{n}  t={t:0.###}s\n" +
+                              $"  p {p.X,8:0.###} {p.Y,8:0.###} {p.Z,8:0.###}\n" +
+                              $"  q {q.X,6:0.##} {q.Y,6:0.##} {q.Z,6:0.##} {q.W,6:0.##}",
+                });
+            }
         }
 
         /// <summary>
@@ -1592,14 +1893,24 @@ namespace RaxicoreEditor.Editor.Documents
                 }
 
                 // Alpha-channel discipline. The opaque shader alpha-tests every textured material (needed for
-                // genuine cutouts: foliage, grates, decals). But many opaque materials — vehicle hulls, ammo
-                // boxes — store a team-colour / spec / self-illum mask in the alpha channel, not a cutout, so
-                // the test punches holes and you see straight through them. Keep the alpha only for textures
-                // whose alpha is a real cutout mask (bimodal, big fractions at both 0 and 255); for everything
-                // else force alpha opaque so nothing is discarded.
-                if (!translucent && texBgra != null && HasTransparentTexels(texBgra) && !IsCutoutAlpha(texBgra))
+                // genuine cutouts: foliage, grates, decals). But many opaque materials store a team-colour /
+                // spec / env-map-modulation mask in the alpha channel, not a cutout, so the test punches holes
+                // and you see straight through them (this is what made Vanu armour render see-through: its
+                // alpha feeds a sphere_modulatealpha shine stage). Prefer the material DB's authoritative alpha
+                // role — Cutout keeps the alpha, EffectMask forces it opaque — and only fall back to the pixel
+                // heuristic (bimodal = cutout) when the material isn't in the DB.
+                if (!translucent && texBgra != null && HasTransparentTexels(texBgra))
                 {
-                    texBgra = ForceOpaqueAlpha(texBgra);
+                    bool keepCutout = (textures.Materials?.GetAlphaRole(Material) ?? MaterialsAdb.AlphaRole.Unknown) switch
+                    {
+                        MaterialsAdb.AlphaRole.Cutout => true,
+                        MaterialsAdb.AlphaRole.EffectMask => false,
+                        _ => IsCutoutAlpha(texBgra),
+                    };
+                    if (!keepCutout)
+                    {
+                        texBgra = ForceOpaqueAlpha(texBgra);
+                    }
                 }
                 return new MeshSubmesh
                 {
