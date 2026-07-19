@@ -125,6 +125,14 @@ namespace RaxicoreEditor.Editor.Documents
         public override string ToString() => Display;
     }
 
+    /// <summary>One node in the viewport's bone-hierarchy tree: a bone name plus its child bones, built from
+    /// the selected part's skeleton (parent → children). Bound directly by the TreeView.</summary>
+    public sealed class BoneTreeNode
+    {
+        public string Name { get; init; } = "";
+        public ObservableCollection<BoneTreeNode> Children { get; } = new();
+    }
+
     /// <summary>
     /// 3D document (UberMesh). Decodes every CMeshSystem via the faithful <see cref="UberModel"/> pool
     /// parser into selectable <see cref="MeshPart"/>s, each split into per-material <see cref="MeshSubmesh"/>es
@@ -273,6 +281,8 @@ namespace RaxicoreEditor.Editor.Documents
                     RaisePropertyChanged(nameof(PartInfo));
                     RaisePropertyChanged(nameof(CanAnimate));
                     RaisePropertyChanged(nameof(HasSkeleton));
+                    RebuildBoneTree();
+                    RaisePropertyChanged(nameof(BoneTreeVisible));
                     RebuildMaterials();
                     if (AnimSource != null) SetAnimSource(AnimSource); // re-filter clips for the new skeleton
                     GeometryChanged?.Invoke();
@@ -571,6 +581,56 @@ namespace RaxicoreEditor.Editor.Documents
         {
             get => _showSkeleton;
             set => SetProperty(ref _showSkeleton, value);
+        }
+
+        private bool _skeletonXray;
+        /// <summary>When the skeleton overlay is shown, draw the bones through the model (no depth test)
+        /// instead of letting geometry occlude them. Paired with <see cref="ShowSkeleton"/> in the UI.</summary>
+        public bool SkeletonXray
+        {
+            get => _skeletonXray;
+            set => SetProperty(ref _skeletonXray, value);
+        }
+
+        /// <summary>Root bones of the selected part's skeleton, each nesting its children — the data behind
+        /// the viewport's bone-hierarchy tree window. Rebuilt whenever the selected part changes.</summary>
+        public ObservableCollection<BoneTreeNode> BoneTree { get; } = new();
+
+        private bool _showBoneTree = true;
+        /// <summary>Whether the viewport's bone-hierarchy tree window is shown (only appears when the selected
+        /// part actually has a skeleton — see <see cref="BoneTreeVisible"/>).</summary>
+        public bool ShowBoneTree
+        {
+            get => _showBoneTree;
+            set { if (SetProperty(ref _showBoneTree, value)) RaisePropertyChanged(nameof(BoneTreeVisible)); }
+        }
+
+        /// <summary>The bone-tree window is visible only when the part has a skeleton and the toggle is on.</summary>
+        public bool BoneTreeVisible => HasSkeleton && _showBoneTree;
+
+        // Rebuild the bone-hierarchy tree from the selected part's skeleton (parent index → child nodes).
+        private void RebuildBoneTree()
+        {
+            BoneTree.Clear();
+            UberModel.Skeleton? skel = _selectedPart?.Skeleton;
+            if (skel == null) return;
+            var nodes = new BoneTreeNode[skel.Bones.Count];
+            for (int i = 0; i < skel.Bones.Count; i++)
+            {
+                nodes[i] = new BoneTreeNode { Name = skel.Bones[i].Name };
+            }
+            for (int i = 0; i < skel.Bones.Count; i++)
+            {
+                int p = skel.Bones[i].Parent;
+                if (p >= 0 && p < nodes.Length && p != i)
+                {
+                    nodes[p].Children.Add(nodes[i]);
+                }
+                else
+                {
+                    BoneTree.Add(nodes[i]); // root (or an out-of-range parent — treat as a root)
+                }
+            }
         }
 
         private bool _showTrajectory;

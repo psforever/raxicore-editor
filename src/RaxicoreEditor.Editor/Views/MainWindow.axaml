@@ -547,6 +547,32 @@
           <TextBlock Text="{Binding Summary}" Foreground="#d2d6dd" FontSize="12" />
           <TextBlock Text="LMB orbit · RMB/MMB pan · wheel zoom" Foreground="#9aa1ac" FontSize="11" />
         </StackPanel>
+
+        <!-- Bone-hierarchy window: a floating panel over the viewport listing the selected part's skeleton
+             as a parent→child tree. Shown only when the part has a skeleton (BoneTreeVisible). -->
+        <Border VerticalAlignment="Top" HorizontalAlignment="Right" Margin="10"
+                Width="240" MaxHeight="480" CornerRadius="6" Padding="0"
+                Background="#e61b1e24" BorderBrush="#33ffffff" BorderThickness="1"
+                IsVisible="{Binding BoneTreeVisible, FallbackValue=False}">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" Text="BONE HIERARCHY" FontSize="11" FontWeight="SemiBold"
+                       Foreground="{DynamicResource AccentTertiaryBrush}" Margin="10,8,10,6" />
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+              <TreeView ItemsSource="{Binding BoneTree}" Background="Transparent" Padding="4,0,4,8">
+                <TreeView.Styles>
+                  <Style Selector="TreeViewItem">
+                    <Setter Property="IsExpanded" Value="True" />
+                  </Style>
+                </TreeView.Styles>
+                <TreeView.ItemTemplate>
+                  <TreeDataTemplate ItemsSource="{Binding Children}">
+                    <TextBlock Text="{Binding Name}" FontSize="12" Foreground="#d2d6dd" />
+                  </TreeDataTemplate>
+                </TreeView.ItemTemplate>
+              </TreeView>
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
       </Grid>
     </DataTemplate>
     <DataTemplate DataType="doc:AnimDocument">
@@ -1030,8 +1056,20 @@
                             IsVisible="{Binding HasSkeleton, FallbackValue=False}">
                   <TextBlock Text="SKELETON" FontSize="11" FontWeight="SemiBold"
                              Foreground="{DynamicResource AccentTertiaryBrush}" />
-                  <ToggleButton Content="Show Bones" IsChecked="{Binding ShowSkeleton, Mode=TwoWay}"
+                  <!-- Bone Tree shows/hides the bone-hierarchy window floating over the viewport. -->
+                  <ToggleButton Content="Bone Tree" IsChecked="{Binding ShowBoneTree, Mode=TwoWay}"
                                 HorizontalAlignment="Stretch" />
+                  <!-- Show Bones toggles the skeleton overlay; X-Ray (only meaningful when bones are shown)
+                       toggles whether the bones draw through the model or are occluded by geometry. -->
+                  <Grid ColumnDefinitions="*,Auto">
+                    <ToggleButton Grid.Column="0" Content="Show Bones"
+                                  IsChecked="{Binding ShowSkeleton, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch" />
+                    <ToggleButton Grid.Column="1" Margin="6,0,0,0" Content="X-Ray"
+                                  IsChecked="{Binding SkeletonXray, Mode=TwoWay}"
+                                  IsEnabled="{Binding ShowSkeleton}"
+                                  ToolTip.Tip="Draw the bones through the model instead of letting geometry hide them." />
+                  </Grid>
                 </StackPanel>
               </StackPanel>
             </ScrollViewer>

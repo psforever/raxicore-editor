@@ -29,6 +29,7 @@ namespace RaxicoreEditor.Editor.Rendering
         private int _pw, _ph;
         private Point _lastPos;
         private bool _orbit, _pan;
+        private bool _skeletonShown; // whether the skeleton overlay drew last frame (so we redraw once when it turns off)
 
         // Off-thread rendering: the GPU submit + wait + readback runs on a background task so the UI thread
         // (menus, orbit input, compositor) never stalls on a slow frame. Only one render is in flight at a
@@ -365,9 +366,19 @@ namespace RaxicoreEditor.Editor.Rendering
             }
             if (_animator == null || _doc is not { ShowSkeleton: true } || _part?.Skeleton == null)
             {
-                _renderer.ClearSkeletonLines();
+                // Turning the overlay off: clear the lines AND request one more frame, or the last frame
+                // (still showing the bones) stays on screen until the next camera move.
+                if (_skeletonShown)
+                {
+                    _renderer.ClearSkeletonLines();
+                    _skeletonShown = false;
+                    _needsRender = true;
+                }
                 return;
             }
+
+            _skeletonShown = true;
+            _renderer.SkeletonXray = _doc.SkeletonXray;
 
             var bones = _part.Skeleton.Bones;
             Matrix4x4[] boneWorld = _animator.SampleBoneWorldsViewSpace(_doc.ActiveClip, _doc.AnimTime);
