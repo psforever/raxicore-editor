@@ -80,17 +80,29 @@ jobs:
             exit 0
           }
           # Anything else (main, workflow_dispatch) publishes only if the version in
-          # Directory.Build.props has no tag yet. Absent tag == version not released == publish.
+          # Directory.Build.props has not been released yet. See build-installer.yml's copy of this
+          # step for why $LASTEXITCODE is cleared and the step ends in an explicit `exit 0`: a handled
+          # `gh api` 404 would otherwise fail the step through the pwsh wrapper's `exit $LASTEXITCODE`.
           $tag = "${{ steps.ver.outputs.tag }}"
-          gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            "publish=false" >> $env:GITHUB_OUTPUT
-            Write-Host "$tag already exists -- building archives as artifacts only."
-          } else {
+          $sha = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha' 2>$null
+          $global:LASTEXITCODE = 0
+          if (-not $sha) {
             "publish=true" >> $env:GITHUB_OUTPUT
             "tag=$tag" >> $env:GITHUB_OUTPUT
             Write-Host "$tag does not exist yet -- this run will publish it."
           }
+          elseif ($sha -eq $env:GITHUB_SHA) {
+            # Tag exists AT THIS COMMIT -- a sibling matrix leg created it moments ago. Still publish,
+            # so this leg's archive is attached instead of being silently dropped.
+            "publish=true" >> $env:GITHUB_OUTPUT
+            "tag=$tag" >> $env:GITHUB_OUTPUT
+            Write-Host "$tag was just created at this commit by a sibling job -- attaching to it."
+          }
+          else {
+            "publish=false" >> $env:GITHUB_OUTPUT
+            Write-Host "$tag already released at $sha -- building archives as artifacts only."
+          }
+          exit 0
 
       - name: Publish (${{ matrix.rid }}, self-contained, ReadyToRun)
         shell: pwsh

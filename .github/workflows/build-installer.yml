@@ -65,17 +65,35 @@ jobs:
             exit 0
           }
           # Anything else (main, workflow_dispatch) publishes only if the version in
-          # Directory.Build.props has no tag yet. Absent tag == version not released == publish.
+          # Directory.Build.props has not been released yet.
           $tag = "${{ steps.ver.outputs.tag }}"
-          gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            "publish=false" >> $env:GITHUB_OUTPUT
-            Write-Host "$tag already exists -- building the installer as an artifact only."
-          } else {
+          # `gh api` exits non-zero when the tag is absent. That is the ANSWER here, not a failure --
+          # but the pwsh wrapper GitHub generates around this script ends with `exit $LASTEXITCODE`,
+          # and neither Write-Host nor `>>` resets it, so a handled 404 fails the whole step. That is
+          # precisely what broke the first run of this automation: it printed the right decision and
+          # exited 1 anyway. Clear the code, and end the step with an explicit `exit 0`, so this step's
+          # success depends only on having reached a decision.
+          $sha = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha' 2>$null
+          $global:LASTEXITCODE = 0
+          if (-not $sha) {
             "publish=true" >> $env:GITHUB_OUTPUT
             "tag=$tag" >> $env:GITHUB_OUTPUT
             Write-Host "$tag does not exist yet -- this run will publish it."
           }
+          elseif ($sha -eq $env:GITHUB_SHA) {
+            # The tag exists AT THIS COMMIT: a sibling job in this same run created it moments ago.
+            # Every job still has to attach its own artifact, so this counts as publishing rather than
+            # as "already released" -- otherwise whichever job lost the creation race would silently
+            # drop its installer and the release would come out incomplete.
+            "publish=true" >> $env:GITHUB_OUTPUT
+            "tag=$tag" >> $env:GITHUB_OUTPUT
+            Write-Host "$tag was just created at this commit by a sibling job -- attaching to it."
+          }
+          else {
+            "publish=false" >> $env:GITHUB_OUTPUT
+            Write-Host "$tag already released at $sha -- building the installer as an artifact only."
+          }
+          exit 0
 
       - name: Publish (win-x64, self-contained)
         run: >
