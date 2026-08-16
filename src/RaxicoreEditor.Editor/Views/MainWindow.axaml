@@ -58,6 +58,17 @@
         </MenuItem>
       </MenuItem>
       <MenuItem>
+        <MenuItem.Header><AccessText Text="_Generate" /></MenuItem.Header>
+        <MenuItem Click="OnGenerateContinentExport"
+                  ToolTip.Tip="Continent terrain, facility layout and footprints, plus an optional separate per-continent ground-height resource. Opens in a new tab.">
+          <MenuItem.Header><AccessText Text="_Continent Export…" /></MenuItem.Header>
+        </MenuItem>
+        <MenuItem Click="OnGenerateListRecords"
+                  ToolTip.Tip="Vertex/material stats for one named mesh record, searched across every mesh library. Opens in a new tab.">
+          <MenuItem.Header><AccessText Text="_Record Detail Report…" /></MenuItem.Header>
+        </MenuItem>
+      </MenuItem>
+      <MenuItem>
         <MenuItem.Header><AccessText Text="_View" /></MenuItem.Header>
         <MenuItem>
           <MenuItem.Header><AccessText Text="_Theme" /></MenuItem.Header>
@@ -96,6 +107,8 @@
                   ToggleType="CheckBox" x:Name="SkyItem"
                   IsVisible="{Binding ActiveDocumentHasSky}"
                   ToolTip.Tip="Draw this continent's procedural sky (horizon/sky/sun from its engine lighting cycle) behind the scene." />
+        <MenuItem Header="Ray Tracing" Click="OnToggleRayTracing"
+                  ToggleType="CheckBox" x:Name="RayTracingItem" />
         <Separator />
         <MenuItem x:Name="FrameRateMenu"
                   ToolTip.Tip="Cap how fast the 3D viewport renders. Rates above your monitor's refresh are disabled — they'd render frames the display can't show.">
@@ -213,7 +226,7 @@
                               <ContentPresenter
                                   Content="{TemplateBinding RightWindowTitleBarContent}"
                                   IsVisible="{TemplateBinding RightWindowTitleBarContent,
-                                                              Converter={x:Static ObjectConverters.IsNotNull}}"
+                                                              Converter={x:Static conv:ObjectConverters.IsNotNull}}"
                                   Margin="0,3,2,2"
                                   Name="RightButtons" />
                               <StackPanel Name="ButtonsPanel" Orientation="Horizontal">
@@ -654,6 +667,126 @@
           </DataGrid.Columns>
         </DataGrid>
       </Grid>
+    </DataTemplate>
+
+    <DataTemplate DataType="doc:ContinentExportDocument">
+      <DockPanel Background="{DynamicResource EditorBackgroundBrush}">
+        <Border DockPanel.Dock="Top" Padding="14,12" BorderBrush="{DynamicResource SeparatorBrush}"
+                BorderThickness="0,0,0,1" IsEnabled="{Binding !IsRunning}">
+          <StackPanel Spacing="10">
+            <StackPanel Spacing="4">
+              <TextBlock Text="PlanetSide reference client folder" FontSize="12"
+                         Foreground="{DynamicResource SubtleTextBrush}" />
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBox Grid.Column="0" Text="{Binding PlanetSideDir, Mode=TwoWay}"
+                         PlaceholderText="e.g. D:\PlanetSide" />
+                <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Padding="10,4"
+                        Click="OnBrowseContinentExportPlanetSide" />
+              </Grid>
+            </StackPanel>
+            <StackPanel Spacing="4">
+              <TextBlock Text="Output folder (continent + footprint JSON)" FontSize="12"
+                         Foreground="{DynamicResource SubtleTextBrush}" />
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBox Grid.Column="0" Text="{Binding OutputDir, Mode=TwoWay}" />
+                <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Padding="10,4"
+                        Click="OnBrowseContinentExportOutput" />
+              </Grid>
+            </StackPanel>
+            <CheckBox Content="Also export terrain heights (a separate ground-height resource)"
+                      IsChecked="{Binding ExportTerrainHeights, Mode=TwoWay}" />
+            <StackPanel Spacing="4" IsVisible="{Binding ExportTerrainHeights}">
+              <TextBlock Text="Terrain height output folder" FontSize="12"
+                         Foreground="{DynamicResource SubtleTextBrush}" />
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBox Grid.Column="0" Text="{Binding TerrainOutputDir, Mode=TwoWay}" />
+                <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Padding="10,4"
+                        Click="OnBrowseContinentExportTerrainOutput" />
+              </Grid>
+            </StackPanel>
+            <TextBlock Text="{Binding ValidationError}" FontSize="11" Foreground="#E5484D"
+                       IsVisible="{Binding ValidationError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="Run" Command="{Binding RunCommand}" Padding="14,5" FontWeight="SemiBold"
+                      Background="{DynamicResource AccentPrimaryBrush}" Foreground="#FAFAFA" />
+              <Button Content="Cancel" Command="{Binding CancelCommand}" Padding="14,5"
+                      IsVisible="{Binding IsRunning}" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+        <Border DockPanel.Dock="Bottom" Padding="14,8" Background="{DynamicResource PanelBackgroundBrush}"
+                BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0">
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <ProgressBar IsIndeterminate="True" Width="120" Height="6" MinHeight="6"
+                         IsVisible="{Binding IsRunning}"
+                         Foreground="{DynamicResource AccentSecondaryBrush}" />
+            <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                       Foreground="{DynamicResource SubtleTextBrush}" />
+          </StackPanel>
+        </Border>
+        <ScrollViewer controls:AutoScrollLog.Source="{Binding Log}" IsVisible="{Binding HasRun}">
+          <ItemsControl ItemsSource="{Binding Log}" Margin="14,10">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12"
+                           TextWrapping="Wrap" Foreground="{DynamicResource TextBrush}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </DockPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="doc:ListRecordsDocument">
+      <DockPanel Background="{DynamicResource EditorBackgroundBrush}">
+        <Border DockPanel.Dock="Top" Padding="14,12" BorderBrush="{DynamicResource SeparatorBrush}"
+                BorderThickness="0,0,0,1" IsEnabled="{Binding !IsRunning}">
+          <StackPanel Spacing="10">
+            <StackPanel Spacing="4">
+              <TextBlock Text="PlanetSide reference client folder" FontSize="12"
+                         Foreground="{DynamicResource SubtleTextBrush}" />
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBox Grid.Column="0" Text="{Binding PlanetSideDir, Mode=TwoWay}"
+                         PlaceholderText="e.g. D:\PlanetSide" />
+                <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Padding="10,4"
+                        Click="OnBrowseListRecordsPlanetSide" />
+              </Grid>
+            </StackPanel>
+            <StackPanel Spacing="4">
+              <TextBlock Text="Record name" FontSize="12" Foreground="{DynamicResource SubtleTextBrush}" />
+              <TextBox Text="{Binding RecordName, Mode=TwoWay}" PlaceholderText="e.g. warpgate" />
+            </StackPanel>
+            <TextBlock Text="{Binding ValidationError}" FontSize="11" Foreground="#E5484D"
+                       IsVisible="{Binding ValidationError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="Run" Command="{Binding RunCommand}" Padding="14,5" FontWeight="SemiBold"
+                      Background="{DynamicResource AccentPrimaryBrush}" Foreground="#FAFAFA" />
+              <Button Content="Cancel" Command="{Binding CancelCommand}" Padding="14,5"
+                      IsVisible="{Binding IsRunning}" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+        <Border DockPanel.Dock="Bottom" Padding="14,8" Background="{DynamicResource PanelBackgroundBrush}"
+                BorderBrush="{DynamicResource SeparatorBrush}" BorderThickness="0,1,0,0">
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <ProgressBar IsIndeterminate="True" Width="120" Height="6" MinHeight="6"
+                         IsVisible="{Binding IsRunning}"
+                         Foreground="{DynamicResource AccentSecondaryBrush}" />
+            <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                       Foreground="{DynamicResource SubtleTextBrush}" />
+          </StackPanel>
+        </Border>
+        <ScrollViewer controls:AutoScrollLog.Source="{Binding Log}" IsVisible="{Binding HasRun}">
+          <ItemsControl ItemsSource="{Binding Log}" Margin="14,10">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12"
+                           TextWrapping="Wrap" Foreground="{DynamicResource TextBrush}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </DockPanel>
     </DataTemplate>
   </shadui:Window.DataTemplates>
 

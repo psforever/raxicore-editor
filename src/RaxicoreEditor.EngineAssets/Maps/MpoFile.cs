@@ -42,6 +42,7 @@ namespace RaxicoreEditor.EngineAssets.Maps
         public IReadOnlyList<MapObject> Objects => _objects;
         public IReadOnlyList<uint> TerrainTileIds => _terrainIds; // map_sections
         public IReadOnlyList<uint> WaterCellIds => _waterIds;     // map_water
+        public IReadOnlyList<uint> LakeCellIds => _lakeIds;       // map_lakes
         public float HeaderA { get; private set; }                // map_header f32[0]
         public float HeaderB { get; private set; }                // map_header f32[1]
 
@@ -49,6 +50,7 @@ namespace RaxicoreEditor.EngineAssets.Maps
         private readonly List<MapObject> _objects = new();
         private readonly List<uint> _terrainIds = new();
         private readonly List<uint> _waterIds = new();
+        private readonly List<uint> _lakeIds = new();
 
         public static bool IsChunky(ReadOnlySpan<byte> d) =>
             d.Length >= 6 && d[0] == 'c' && d[1] == 'h' && d[2] == 'u' && d[3] == 'n' && d[4] == 'k' && d[5] == 'y';
@@ -95,8 +97,9 @@ namespace RaxicoreEditor.EngineAssets.Maps
                     case "map_objects": ReadObjects(r); break;
                     case "map_sections": ReadIds(r, _terrainIds); break;
                     case "map_water": ReadIds(r, _waterIds); break;
+                    case "map_lakes": ReadIds(r, _lakeIds); break;
                     case "map_header": ReadHeader(r, byteLen); break;
-                    default: break; // map_lakes etc. — skipped
+                    default: break; // other sections — skipped
                 }
 
                 r.Position = payloadStart + (int)byteLen; // resync regardless of how much a reader consumed

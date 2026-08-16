@@ -2,15 +2,20 @@
 
 layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUv;
+layout(location = 2) in vec2 vDetailUv;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D tex0;
+// See mesh.frag: a neutral 50%-grey 1×1 when this material has no mat_detail, so modulate2x is a no-op.
+layout(set = 0, binding = 1) uniform sampler2D tex1;
 
 // Translucent overlay pass (shield domes, energy beams, shoreline foam — the engine-derived "mask"
 // materials): unlike mesh.frag's hard alpha-test cutout, this outputs the texture's real alpha so the
 // blend-enabled pipeline can composite it over whatever the opaque pass already drew beneath it.
 void main() {
     vec4 albedo = texture(tex0, vUv);
+    vec3 detail = texture(tex1, vDetailUv).rgb;
+    albedo.rgb *= detail * 2.0;
     vec3 n = normalize(vNormal);
     if (!gl_FrontFacing) {
         n = -n;

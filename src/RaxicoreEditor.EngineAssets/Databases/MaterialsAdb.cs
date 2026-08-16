@@ -41,7 +41,8 @@ namespace RaxicoreEditor.EngineAssets.Databases
             EffectMask,
         }
 
-        public readonly record struct MaterialDef(string? Texture, bool Translucent, AlphaRole Alpha);
+        public readonly record struct MaterialDef(string? Texture, bool Translucent, AlphaRole Alpha,
+            string? DetailTexture, float TileRate);
 
         private readonly Dictionary<string, MaterialDef> _byName = new(StringComparer.OrdinalIgnoreCase);
 
@@ -112,6 +113,29 @@ namespace RaxicoreEditor.EngineAssets.Databases
             return AlphaRole.Unknown;
         }
 
+        /// <summary>
+        /// The detail texture + tile rate for EXACTLY this material name (no <c>'+'</c>-splitting fallback —
+        /// unlike <see cref="Lookup"/>, callers must pass the record they actually want). Terrain's detail
+        /// texture/tile rate live on the map-cell base record (e.g. <c>"map14"</c>), not the per-tile blend
+        /// record (<c>"map140001"</c>, which has no materials.adb entry of its own) — so
+        /// <c>TextureProvider.ResolveDetail</c> always queries the prefix before the last
+        /// <c>'+'</c>, which is also correct for ordinary object materials since mat_detail there sits on
+        /// the same base record as mat_texture1. Also unlike <see cref="Lookup"/>, this does NOT require the
+        /// record to carry its own mat_texture1/mat_anim1 — some detail-bearing bases (doors/trees) may not.
+        /// </summary>
+        public bool TryGetDetail(string material, out string? detailTexture, out float tileRate)
+        {
+            detailTexture = null;
+            tileRate = 1f;
+            if (string.IsNullOrEmpty(material) || !_byName.TryGetValue(material, out MaterialDef d) || d.DetailTexture == null)
+            {
+                return false;
+            }
+            detailTexture = d.DetailTexture;
+            tileRate = d.TileRate;
+            return true;
+        }
+
         private void Parse(byte[] data)
         {
             int adb = Find(data, "asciidatabase", 0);
@@ -152,7 +176,8 @@ namespace RaxicoreEditor.EngineAssets.Databases
 
         private static MaterialDef ReadRecord(byte[] data, int pos, Func<uint, string> sym)
         {
-            string? tex1 = null, anim1 = null;
+            string? tex1 = null, anim1 = null, detail = null;
+            float tileRate = 1f;
             bool translucent = false;
             bool alphaTest = false;   // a mat_state that enables alpha testing → a genuine cutout
             bool effectMask = false;  // a *modulatealpha* stage consumes the alpha → it isn't opacity
@@ -167,6 +192,14 @@ namespace RaxicoreEditor.EngineAssets.Databases
                 {
                     case "mat_texture1": tex1 = Arg1(); break;
                     case "mat_anim1": anim1 = Arg1(); break;
+                    // The tiled detail texture blended over the base albedo (terrain, some doors/trees) and
+                    // its UV tile rate relative to the base UV (e.g. terrain's mat_tilerate("16") — the
+                    // detail layer repeats 16x more densely than the base tile). Both args are stored as
+                    // ASCII in the string pool, not binary, so a plain float parse is correct.
+                    case "mat_detail": detail = Arg1(); break;
+                    case "mat_tilerate":
+                        if (float.TryParse(Arg1(), System.Globalization.CultureInfo.InvariantCulture, out float tr)) tileRate = tr;
+                        break;
                     case "mat_pipeline": { string v = Arg1(); if (v == "alpha_sort" || v == "effect") translucent = true; break; }
                     case "mat_alphablend":
                     case "mat_sortalpha": translucent = true; break;
@@ -194,10 +227,11 @@ namespace RaxicoreEditor.EngineAssets.Databases
             //    and placeholder/debug maps, which read wrong as flat textures.
             // In each case the caller falls back to resolving the albedo from the material name instead.
             if (tex != null && IsNonAlbedo(tex)) tex = null;
+            if (string.IsNullOrEmpty(detail) || IsNonAlbedo(detail)) detail = null;
             // Alpha-test (a real cutout) wins if both are somehow present; otherwise a modulation stage marks
             // the alpha as an effect mask. Neither → Unknown, and the caller falls back to a pixel test.
             AlphaRole alpha = alphaTest ? AlphaRole.Cutout : (effectMask ? AlphaRole.EffectMask : AlphaRole.Unknown);
-            return new MaterialDef(tex, translucent, alpha);
+            return new MaterialDef(tex, translucent, alpha, detail, tileRate);
         }
 
         private static bool IsNonAlbedo(string texture) =>

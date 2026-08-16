@@ -2,6 +2,7 @@ using System;
 using Silk.NET.Core;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
+using Silk.NET.Vulkan.Extensions.KHR;
 
 namespace RaxicoreEditor.Editor.Rendering
 {
@@ -19,6 +20,32 @@ namespace RaxicoreEditor.Editor.Rendering
         public Queue GraphicsQueue { get; private set; }
         public uint GraphicsFamily { get; private set; }
         public CommandPool CommandPool { get; private set; }
+
+        /// <summary>
+        /// Whether the selected physical device can do hardware-accelerated ray tracing: both
+        /// <c>VK_KHR_acceleration_structure</c> and <c>VK_KHR_ray_tracing_pipeline</c> (plus its required
+        /// dependency <c>VK_KHR_deferred_host_operations</c>) are advertised, AND the device actually
+        /// reports the corresponding feature bits set -- a device can list an extension as present while
+        /// still reporting its features as unsupported (e.g. some software/CPU Vulkan implementations),
+        /// so the extension check alone is not sufficient.
+        ///
+        /// This is a read-only capability probe: none of these extensions are enabled on the logical
+        /// device, so detecting support here has no effect on anything that renders today.
+        /// </summary>
+        public bool SupportsRayTracing { get; private set; }
+
+        /// <summary>Loaded <c>VK_KHR_acceleration_structure</c> function table, or null if unsupported.</summary>
+        public KhrAccelerationStructure? KhrAccelerationStructure { get; private set; }
+
+        /// <summary>Loaded <c>VK_KHR_ray_tracing_pipeline</c> function table, or null if unsupported.</summary>
+        public KhrRayTracingPipeline? KhrRayTracingPipeline { get; private set; }
+
+        /// <summary>
+        /// Device limits for ray tracing pipelines (shader group handle size/alignment, SBT base
+        /// alignment, max recursion depth, ...), queried once alongside device creation. Default/zeroed
+        /// when <see cref="SupportsRayTracing"/> is false -- nothing should read it in that case.
+        /// </summary>
+        public PhysicalDeviceRayTracingPipelinePropertiesKHR RayTracingProperties { get; private set; }
 
         private static VulkanContext? _shared;
         private static bool _failed;
@@ -39,8 +66,13 @@ namespace RaxicoreEditor.Editor.Rendering
                 _shared = new VulkanContext();
                 return _shared;
             }
-            catch
+            catch (Exception ex)
             {
+                // Previously silent -- a broken driver/instance/device produced no diagnostic trail at
+                // all, anywhere. stderr is always safe to write to (redirected or not: a WinExe with
+                // nothing attached simply discards it), so this costs nothing and gives the one signal
+                // available for "why did every 3D viewport just silently stop working".
+                Console.Error.WriteLine($"VulkanContext initialisation failed: {ex}");
                 _failed = true;
                 return null;
             }
@@ -51,6 +83,7 @@ namespace RaxicoreEditor.Editor.Rendering
             Vk = Vk.GetApi();
             CreateInstance();
             PickPhysicalDevice();
+            SupportsRayTracing = ProbeRayTracingSupport();
             CreateDevice();
             CreateCommandPool();
         }
@@ -68,7 +101,13 @@ namespace RaxicoreEditor.Editor.Rendering
                     ApplicationVersion = new Version32(0, 1, 0),
                     PEngineName = engineName,
                     EngineVersion = new Version32(0, 1, 0),
-                    ApiVersion = Vk.Version11,
+                    // 1.2 so PhysicalDeviceVulkan12Features (buffer device address, descriptor indexing,
+                    // ...) is available as a single feature-query/enable struct -- both are hard
+                    // prerequisites of VK_KHR_acceleration_structure. Purely additive over 1.1: it does
+                    // not require the device itself to support 1.2 (CreateDevice below still checks that
+                    // per-device via SupportsRayTracing before touching any of it), and every existing
+                    // 1.0/1.1 call in this file keeps working unchanged.
+                    ApiVersion = Vk.Version12,
                 };
                 // macOS renders Vulkan only through MoltenVK, a non-conformant "portability" driver that the
                 // loader hides unless VK_KHR_portability_enumeration is enabled and the enumeration flag is
@@ -206,6 +245,47 @@ namespace RaxicoreEditor.Editor.Rendering
             }
         }
 
+        /// <summary>
+        /// True if <see cref="PhysicalDevice"/> both advertises the ray tracing extensions and reports
+        /// their feature bits as actually supported.
+        /// </summary>
+        private bool ProbeRayTracingSupport()
+        {
+            // PhysicalDeviceVulkan12Features (queried/enabled below) is only meaningful if the device
+            // itself reports 1.2 -- the instance's ApiVersion above is a ceiling on what the APP can ask
+            // for, not a floor on what any given DEVICE actually implements.
+            Vk.GetPhysicalDeviceProperties(PhysicalDevice, out PhysicalDeviceProperties devProps);
+            if (devProps.ApiVersion < Vk.Version12)
+            {
+                return false;
+            }
+
+            if (!DeviceExtensionAvailable(PhysicalDevice, "VK_KHR_acceleration_structure") ||
+                !DeviceExtensionAvailable(PhysicalDevice, "VK_KHR_ray_tracing_pipeline") ||
+                !DeviceExtensionAvailable(PhysicalDevice, "VK_KHR_deferred_host_operations"))
+            {
+                return false;
+            }
+
+            var rtPipelineFeatures = new PhysicalDeviceRayTracingPipelineFeaturesKHR
+            {
+                SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr,
+            };
+            var asFeatures = new PhysicalDeviceAccelerationStructureFeaturesKHR
+            {
+                SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr,
+                PNext = &rtPipelineFeatures,
+            };
+            var features2 = new PhysicalDeviceFeatures2
+            {
+                SType = StructureType.PhysicalDeviceFeatures2,
+                PNext = &asFeatures,
+            };
+            Vk.GetPhysicalDeviceFeatures2(PhysicalDevice, &features2);
+
+            return asFeatures.AccelerationStructure && rtPipelineFeatures.RayTracingPipeline;
+        }
+
         private void CreateDevice()
         {
             float priority = 1f;
@@ -220,23 +300,58 @@ namespace RaxicoreEditor.Editor.Rendering
 
             // A MoltenVK physical device is a portability-subset device; the Vulkan spec REQUIRES enabling
             // VK_KHR_portability_subset whenever a device advertises it. Only reached on macOS.
-            nint devExtPtr = 0;
-            uint devExtCount = 0;
+            var deviceExts = new System.Collections.Generic.List<string>();
             if (OperatingSystem.IsMacOS() && DeviceExtensionAvailable(PhysicalDevice, "VK_KHR_portability_subset"))
             {
-                devExtPtr = SilkMarshal.StringArrayToPtr(new[] { "VK_KHR_portability_subset" });
-                devExtCount = 1;
+                deviceExts.Add("VK_KHR_portability_subset");
             }
 
+            // Provisioning is independent of the user's Render > Ray Tracing menu toggle: the capability
+            // is enabled here, once, whenever the hardware/driver supports it, exactly like FillModeNonSolid
+            // above. Whether any given frame actually USES it is a separate, per-frame, RenderSettings.RayTracing
+            // check made by the renderer -- this only has to happen once, at device creation.
+            if (SupportsRayTracing)
+            {
+                deviceExts.Add("VK_KHR_deferred_host_operations");
+                deviceExts.Add("VK_KHR_acceleration_structure");
+                deviceExts.Add("VK_KHR_ray_tracing_pipeline");
+            }
+
+            nint devExtPtr = deviceExts.Count > 0 ? SilkMarshal.StringArrayToPtr(deviceExts.ToArray()) : 0;
+
+            var rtPipeFeatures = new PhysicalDeviceRayTracingPipelineFeaturesKHR
+            {
+                SType = StructureType.PhysicalDeviceRayTracingPipelineFeaturesKhr,
+                RayTracingPipeline = SupportsRayTracing,
+            };
+            var asFeatures = new PhysicalDeviceAccelerationStructureFeaturesKHR
+            {
+                SType = StructureType.PhysicalDeviceAccelerationStructureFeaturesKhr,
+                AccelerationStructure = SupportsRayTracing,
+                PNext = &rtPipeFeatures,
+            };
+            var vk12Features = new PhysicalDeviceVulkan12Features
+            {
+                SType = StructureType.PhysicalDeviceVulkan12Features,
+                BufferDeviceAddress = SupportsRayTracing,
+                PNext = &asFeatures,
+            };
+
+            // Chaining PhysicalDeviceVulkan12Features (etc.) requires PEnabledFeatures to be left null --
+            // VkPhysicalDeviceFeatures2-style structs and the legacy PEnabledFeatures pointer are mutually
+            // exclusive per the spec. Base features (FillModeNonSolid) move into the chain's own
+            // PhysicalDeviceFeatures2 wrapper instead.
+            var features2 = new PhysicalDeviceFeatures2 { SType = StructureType.PhysicalDeviceFeatures2, Features = features, PNext = &vk12Features };
             var dci = new DeviceCreateInfo
             {
                 SType = StructureType.DeviceCreateInfo,
+                PNext = &features2,
                 QueueCreateInfoCount = 1,
                 PQueueCreateInfos = &qci,
-                PEnabledFeatures = &features,
-                EnabledExtensionCount = devExtCount,
+                EnabledExtensionCount = (uint)deviceExts.Count,
                 PpEnabledExtensionNames = (byte**)devExtPtr,
             };
+
             Device device;
             Result res = Vk.CreateDevice(PhysicalDevice, &dci, null, &device);
             if (devExtPtr != 0)
@@ -247,6 +362,26 @@ namespace RaxicoreEditor.Editor.Rendering
             Device = device;
             Vk.GetDeviceQueue(Device, GraphicsFamily, 0, out Queue queue);
             GraphicsQueue = queue;
+
+            if (SupportsRayTracing)
+            {
+                if (!Vk.TryGetDeviceExtension(Instance, Device, out KhrAccelerationStructure khrAs) ||
+                    !Vk.TryGetDeviceExtension(Instance, Device, out KhrRayTracingPipeline khrRtp))
+                {
+                    // Genuinely shouldn't happen given the extensions were just enabled above, but if the
+                    // loader can't resolve the function pointers for some reason, fail closed rather than
+                    // leave SupportsRayTracing true with null function tables behind it.
+                    SupportsRayTracing = false;
+                    return;
+                }
+                KhrAccelerationStructure = khrAs;
+                KhrRayTracingPipeline = khrRtp;
+
+                var rtProps = new PhysicalDeviceRayTracingPipelinePropertiesKHR { SType = StructureType.PhysicalDeviceRayTracingPipelinePropertiesKhr };
+                var props2 = new PhysicalDeviceProperties2 { SType = StructureType.PhysicalDeviceProperties2, PNext = &rtProps };
+                Vk.GetPhysicalDeviceProperties2(PhysicalDevice, &props2);
+                RayTracingProperties = rtProps;
+            }
         }
 
         private void CreateCommandPool()

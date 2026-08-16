@@ -9,6 +9,7 @@ using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using RaxicoreEditor.Editor.Documents;
+using RaxicoreEditor.Editor.Rendering;
 using RaxicoreEditor.Editor.Theming;
 using RaxicoreEditor.Editor.Updates;
 using RaxicoreEditor.Editor.ViewModels;
@@ -35,6 +36,21 @@ namespace RaxicoreEditor.Editor.Views
             SyncModelDetailChecks(RenderSettings.Detail);
             EngineShadingItem.IsChecked = RenderSettings.EngineShading;
             SkyItem.IsChecked = RenderSettings.Sky;
+
+            // Real hardware/driver capability probe (see VulkanContext.SupportsRayTracing) -- the menu
+            // item only turns on if the GPU actually reports both acceleration-structure and ray-tracing-
+            // pipeline feature bits, not just the extension being listed.
+            RenderSettings.RayTracingSupported = VulkanContext.TryGetShared()?.SupportsRayTracing ?? false;
+            _vm.Log($"GPU ray tracing: {(RenderSettings.RayTracingSupported ? "supported" : "not supported")}.");
+            RayTracingItem.IsEnabled = RenderSettings.RayTracingSupported;
+            // Opt-in only, deliberately: RenderSettings.RayTracing/EditorSettings.RayTracing both default to
+            // false and nothing here ever forces them on just because the hardware supports it -- the user
+            // has to check the menu item themselves, same as any other render toggle.
+            RayTracingItem.IsChecked = RenderSettings.RayTracingSupported && RenderSettings.RayTracing;
+            ToolTip.SetTip(RayTracingItem, RenderSettings.RayTracingSupported
+                ? "Render via hardware ray tracing instead of rasterizing. Opaque static geometry only for now -- skinned/animated meshes and translucent surfaces still rasterize."
+                : "This GPU/driver does not report hardware ray tracing support (VK_KHR_acceleration_structure + VK_KHR_ray_tracing_pipeline).");
+
             SetUpFrameRateMenu();
             AutoUpdateItem.IsChecked = (Application.Current as App)?.Settings.AutoCheckForUpdates ?? true;
 
@@ -135,6 +151,18 @@ namespace RaxicoreEditor.Editor.Views
             _vm.Log($"Sky: {(RenderSettings.Sky ? "on" : "off")}.");
         }
 
+        private void OnToggleRayTracing(object? sender, RoutedEventArgs e)
+        {
+            RenderSettings.RayTracing = RayTracingItem.IsChecked;
+            if (Application.Current is App app)
+            {
+                app.Settings.RayTracing = RenderSettings.RayTracing;
+                app.Settings.Save();
+            }
+            RenderSettings.RaiseChanged();
+            _vm.Log($"Ray tracing: {(RenderSettings.RayTracing ? "on" : "off")}.");
+        }
+
         private async void OnOpenFolder(object? sender, RoutedEventArgs e)
         {
             try
@@ -174,6 +202,96 @@ namespace RaxicoreEditor.Editor.Views
             catch (Exception ex)
             {
                 _vm.Log("open archive failed: " + ex.Message);
+            }
+        }
+
+        // --- Generate ------------------------------------------------------------------------------
+        // Each item opens a fresh tab pre-filled with a best guess at the PlanetSide folder (the most
+        // recently mounted one, if any) rather than asking the user to browse to it every time; nothing
+        // runs until they click that tab's own Run button.
+
+        private void OnGenerateContinentExport(object? sender, RoutedEventArgs e)
+        {
+            _vm.AddDocument(new ContinentExportDocument(GuessPlanetSideDir()));
+        }
+
+        private void OnGenerateListRecords(object? sender, RoutedEventArgs e)
+        {
+            _vm.AddDocument(new ListRecordsDocument(GuessPlanetSideDir()));
+        }
+
+        private string GuessPlanetSideDir()
+        {
+            for (int i = _vm.Roots.Count - 1; i >= 0; i--)
+            {
+                if (!string.IsNullOrEmpty(_vm.Roots[i].FullPath))
+                {
+                    return _vm.Roots[i].FullPath;
+                }
+            }
+            return "";
+        }
+
+        private async Task<string?> PickFolderAsync(string title, string? suggestedStartLocation = null)
+        {
+            var options = new FolderPickerOpenOptions { Title = title, AllowMultiple = false };
+            if (!string.IsNullOrEmpty(suggestedStartLocation) && Directory.Exists(suggestedStartLocation))
+            {
+                options.SuggestedStartLocation = await StorageProvider.TryGetFolderFromPathAsync(suggestedStartLocation);
+            }
+            IReadOnlyList<IStorageFolder> folders = await StorageProvider.OpenFolderPickerAsync(options);
+            return folders.Count > 0 ? folders[0].TryGetLocalPath() : null;
+        }
+
+        private async void OnBrowseContinentExportPlanetSide(object? sender, RoutedEventArgs e)
+        {
+            if ((sender as Button)?.DataContext is not ContinentExportDocument doc)
+            {
+                return;
+            }
+            string? path = await PickFolderAsync("PlanetSide reference client folder", doc.PlanetSideDir);
+            if (path is not null)
+            {
+                doc.PlanetSideDir = path;
+            }
+        }
+
+        private async void OnBrowseContinentExportOutput(object? sender, RoutedEventArgs e)
+        {
+            if ((sender as Button)?.DataContext is not ContinentExportDocument doc)
+            {
+                return;
+            }
+            string? path = await PickFolderAsync("Continent JSON output folder", doc.OutputDir);
+            if (path is not null)
+            {
+                doc.OutputDir = path;
+            }
+        }
+
+        private async void OnBrowseContinentExportTerrainOutput(object? sender, RoutedEventArgs e)
+        {
+            if ((sender as Button)?.DataContext is not ContinentExportDocument doc)
+            {
+                return;
+            }
+            string? path = await PickFolderAsync("Terrain height output folder", doc.TerrainOutputDir);
+            if (path is not null)
+            {
+                doc.TerrainOutputDir = path;
+            }
+        }
+
+        private async void OnBrowseListRecordsPlanetSide(object? sender, RoutedEventArgs e)
+        {
+            if ((sender as Button)?.DataContext is not ListRecordsDocument doc)
+            {
+                return;
+            }
+            string? path = await PickFolderAsync("PlanetSide reference client folder", doc.PlanetSideDir);
+            if (path is not null)
+            {
+                doc.PlanetSideDir = path;
             }
         }
 

@@ -4,6 +4,7 @@ using System.IO;
 using System.Numerics;
 using RaxicoreEditor.Editor.Documents;
 using Silk.NET.Vulkan;
+using Silk.NET.Vulkan.Extensions.KHR;
 
 namespace RaxicoreEditor.Editor.Rendering
 {
@@ -16,7 +17,14 @@ namespace RaxicoreEditor.Editor.Rendering
     {
         private const Format ColorFormat = Format.B8G8R8A8Srgb; // matches Avalonia Bgra8888
         private const Format DepthFormat = Format.D32Sfloat;
-        private const Format TextureFormat = Format.B8G8R8A8Unorm; // DDS decode is BGRA
+        // DDS decode is BGRA, and the source art is sRGB-encoded like any 2003-era diffuse texture. This
+        // has to be the _Srgb variant, not Unorm: sampling it then gives the shader properly linear
+        // albedo, which the sRGB colour attachment correctly re-encodes exactly once on write. Sampling as
+        // Unorm (the raw encoded bytes, unconverted) applies that same sRGB curve a second time on top of
+        // the one already baked into the texture, which is what was producing the washed-out, low-contrast
+        // look -- the same fix already applied to the sky panorama in sky.frag, just via the hardware path
+        // (a format on the image view) instead of a manual `pow(color, 2.2)` in the shader.
+        private const Format TextureFormat = Format.B8G8R8A8Srgb;
 
         private readonly VulkanContext _ctx;
         private readonly Vk _vk;
@@ -75,10 +83,58 @@ namespace RaxicoreEditor.Editor.Rendering
             public Silk.NET.Vulkan.Buffer Ibuf;
             public DeviceMemory Imem;
             public uint IndexCount;
+            public uint VertexCount;
             public DescriptorSet DescSet;
             public bool Translucent;
             public bool HostVisible; // true only for skinned batches (per-frame CPU vertex updates)
         }
+
+        // ---- ray tracing (only touched when _ctx.SupportsRayTracing) --------------------------------
+        // V1 scope: one BLAS per opaque, non-skinned batch (skinned meshes would need a per-frame BLAS
+        // rebuild; translucent surfaces would need any-hit alpha testing) -- both are fast-follow work, not
+        // this pass. Shading uses the same baked per-vertex colour the rasterizer falls back to for
+        // untextured geometry (no bindless texture array in the hit shader yet, also fast-follow).
+        private struct RtBlas
+        {
+            public Silk.NET.Vulkan.Buffer Buffer;
+            public DeviceMemory Mem;
+            public AccelerationStructureKHR Handle;
+        }
+        // Mirrors the shader's `struct InstanceDesc { uint64_t vertexAddr; uint64_t indexAddr; }` (std430:
+        // two 8-byte fields, no padding) -- indexed by gl_InstanceCustomIndexEXT in mesh.rchit.
+        private struct RtInstanceDesc
+        {
+            public ulong VertexAddr;
+            public ulong IndexAddr;
+        }
+
+        private bool _rtPipelineReady;
+        private DescriptorSetLayout _rtDescLayout;
+        private PipelineLayout _rtPipelineLayout;
+        private Pipeline _rtPipeline;
+        private DescriptorPool _rtDescPool;
+        private DescriptorSet _rtDescSet;
+        private Silk.NET.Vulkan.Buffer _sbtBuffer;
+        private DeviceMemory _sbtMem;
+        private StridedDeviceAddressRegionKHR _sbtRaygen, _sbtMiss, _sbtHit, _sbtCallable;
+
+        private readonly List<RtBlas> _rtBlas = new();
+        private Silk.NET.Vulkan.Buffer _rtTlasBuf;
+        private DeviceMemory _rtTlasMem;
+        private AccelerationStructureKHR _rtTlas;
+        private Silk.NET.Vulkan.Buffer _rtInstDescBuf;
+        private DeviceMemory _rtInstDescMem;
+        private bool _rtSceneReady;
+
+        // Ray tracing writes into its own plain UNORM storage image rather than _colorImage: many drivers
+        // do not support STORAGE_IMAGE usage on sRGB formats (imageStore has no sRGB-encoding image format
+        // at all in GLSL), so _colorImage's Srgb format is never touched by the RT path -- the shader
+        // gamma-encodes by hand (see mesh.rgen) and this image's bytes are copied to the readback buffer
+        // directly, bypassing _colorImage entirely for RT frames.
+        private const Format RtColorFormat = Format.B8G8R8A8Unorm;
+        private Image _rtColorImage;
+        private DeviceMemory _rtColorMem;
+        private ImageView _rtColorView;
         private struct GpuTexture
         {
             public Image Image;
@@ -122,6 +178,7 @@ namespace RaxicoreEditor.Editor.Rendering
             CreateSkyPipeline();
             CreateBonePipeline();
             AllocateCommandBuffer();
+            CreateRayTracingPipeline();
         }
 
         // ---- mesh upload -----------------------------------------------------------------------
@@ -137,7 +194,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 return;
             }
 
-            // Collect unique textures (dedupe by BGRA array reference); index 0 is always a 1×1 white.
+            // Collect unique BASE textures (dedupe by BGRA array reference); index 0 is always a 1×1 white.
             var texIndex = new Dictionary<byte[], int>(ReferenceEqualityComparer.Instance);
             var texSources = new List<(byte[] bgra, int w, int h)>();
             byte[] white = new byte[] { 255, 255, 255, 255 };
@@ -151,21 +208,78 @@ namespace RaxicoreEditor.Editor.Rendering
                 }
             }
 
-            CreateDescriptorPool((uint)texSources.Count);
-            var descSets = new DescriptorSet[texSources.Count];
-            for (int i = 0; i < texSources.Count; i++)
+            // Collect unique DETAIL textures (materials.adb's mat_detail) the same way; index 0 is a
+            // neutral 50%-grey 1×1. The fragment shader blends base*detail*2 (era-correct D3D8 modulate2x
+            // detail-texture op), and grey*2 = 1.0, so a submesh with no detail texture is unaffected —
+            // no shader branch needed to distinguish "has detail" from "doesn't".
+            var detailIndex = new Dictionary<byte[], int>(ReferenceEqualityComparer.Instance);
+            var detailSources = new List<(byte[] bgra, int w, int h)>();
+            byte[] neutralDetail = new byte[] { 128, 128, 128, 255 };
+            detailSources.Add((neutralDetail, 1, 1)); // no detail = index 0
+            foreach (MeshSubmesh s in submeshes)
             {
-                GpuTexture t = CreateTexture(texSources[i].bgra, texSources[i].w, texSources[i].h);
-                _textures.Add(t);
-                descSets[i] = AllocateTextureDescriptor(t.View);
+                if (s.HasDetailTexture && s.DetailTextureBgra != null && !detailIndex.ContainsKey(s.DetailTextureBgra))
+                {
+                    detailIndex[s.DetailTextureBgra] = detailSources.Count;
+                    detailSources.Add((s.DetailTextureBgra, s.DetailTextureWidth, s.DetailTextureHeight));
+                }
             }
 
             int TexOf(MeshSubmesh s) =>
                 s.HasTexture && s.TextureBgra != null && texIndex.TryGetValue(s.TextureBgra, out int idx) ? idx : 0;
+            int DetailOf(MeshSubmesh s) =>
+                s.HasDetailTexture && s.DetailTextureBgra != null && detailIndex.TryGetValue(s.DetailTextureBgra, out int idx) ? idx : 0;
 
-            // Pass 1: tally the merged size of each static (non-skinned) group, keyed by (texture,
+            // One combined (base, detail) descriptor set per DISTINCT PAIR actually used — not per base
+            // texture alone, since two materials can share a base texture but differ in detail texture (or
+            // vice versa). Enumerated up front so the descriptor pool can be sized exactly.
+            var pairIndex = new Dictionary<(int baseIdx, int detailIdx), int>();
+            var pairList = new List<(int baseIdx, int detailIdx)>();
+            foreach (MeshSubmesh s in submeshes)
+            {
+                var pair = (TexOf(s), DetailOf(s));
+                if (!pairIndex.ContainsKey(pair))
+                {
+                    pairIndex[pair] = pairList.Count;
+                    pairList.Add(pair);
+                }
+            }
+
+            CreateDescriptorPool((uint)pairList.Count);
+            var baseGpuByIndex = new Dictionary<int, GpuTexture>();
+            var detailGpuByIndex = new Dictionary<int, GpuTexture>();
+            GpuTexture GetBaseGpu(int idx)
+            {
+                if (!baseGpuByIndex.TryGetValue(idx, out GpuTexture t))
+                {
+                    t = CreateTexture(texSources[idx].bgra, texSources[idx].w, texSources[idx].h);
+                    _textures.Add(t);
+                    baseGpuByIndex[idx] = t;
+                }
+                return t;
+            }
+            GpuTexture GetDetailGpu(int idx)
+            {
+                if (!detailGpuByIndex.TryGetValue(idx, out GpuTexture t))
+                {
+                    t = CreateTexture(detailSources[idx].bgra, detailSources[idx].w, detailSources[idx].h);
+                    _textures.Add(t);
+                    detailGpuByIndex[idx] = t;
+                }
+                return t;
+            }
+            var pairDescSets = new DescriptorSet[pairList.Count];
+            for (int p = 0; p < pairList.Count; p++)
+            {
+                GpuTexture b = GetBaseGpu(pairList[p].baseIdx);
+                GpuTexture d = GetDetailGpu(pairList[p].detailIdx);
+                pairDescSets[p] = AllocateTextureDescriptor(b.View, d.View);
+            }
+            int PairOf(MeshSubmesh s) => pairIndex[(TexOf(s), DetailOf(s))];
+
+            // Pass 1: tally the merged size of each static (non-skinned) group, keyed by (texture pair,
             // translucency). Skinned submeshes are handled individually below and excluded from merging.
-            var groupTotals = new Dictionary<(int tex, bool trans), (long verts, long indices)>();
+            var groupTotals = new Dictionary<(int pair, bool trans), (long verts, long indices)>();
             for (int i = 0; i < submeshes.Count; i++)
             {
                 MeshSubmesh s = submeshes[i];
@@ -173,21 +287,21 @@ namespace RaxicoreEditor.Editor.Rendering
                 {
                     continue;
                 }
-                var key = (TexOf(s), s.IsTranslucent);
+                var key = (PairOf(s), s.IsTranslucent);
                 groupTotals.TryGetValue(key, out (long verts, long indices) t);
                 t.verts += s.Vertices.Length / 8;
                 t.indices += s.Indices.Length;
                 groupTotals[key] = t;
             }
 
-            // Allocate one merged (stride-12 vertex, uint index) CPU array per group, then fill them in a
+            // Allocate one merged (stride-14 vertex, uint index) CPU array per group, then fill them in a
             // second pass — offsetting each submesh's indices by the group's running vertex count. This is
             // one big device-local buffer pair per group instead of a pair per submesh (58k → a few hundred),
             // which is the bulk of the load-time and per-frame win.
             var groupData = new Dictionary<(int, bool), (float[] v, uint[] ix, int vOff, int iOff, int vBase)>();
-            foreach (KeyValuePair<(int tex, bool trans), (long verts, long indices)> g in groupTotals)
+            foreach (KeyValuePair<(int pair, bool trans), (long verts, long indices)> g in groupTotals)
             {
-                groupData[g.Key] = (new float[g.Value.verts * 12], new uint[g.Value.indices], 0, 0, 0);
+                groupData[g.Key] = (new float[g.Value.verts * 14], new uint[g.Value.indices], 0, 0, 0);
             }
             for (int i = 0; i < submeshes.Count; i++)
             {
@@ -196,20 +310,20 @@ namespace RaxicoreEditor.Editor.Rendering
                 {
                     continue;
                 }
-                var key = (TexOf(s), s.IsTranslucent);
+                var key = (PairOf(s), s.IsTranslucent);
                 (float[] v, uint[] ix, int vOff, int iOff, int vBase) d = groupData[key];
                 int vc = s.Vertices.Length / 8;
-                AppendVertices(d.v, d.vOff, s.Vertices, s.Colors);
+                AppendVertices(d.v, d.vOff, s.Vertices, s.Colors, s.DetailTileRate);
                 for (int k = 0; k < s.Indices.Length; k++)
                 {
                     d.ix[d.iOff + k] = s.Indices[k] + (uint)d.vBase;
                 }
-                d.vOff += vc * 12;
+                d.vOff += vc * 14;
                 d.iOff += s.Indices.Length;
                 d.vBase += vc;
                 groupData[key] = d;
             }
-            foreach (KeyValuePair<(int tex, bool trans), (float[] v, uint[] ix, int vOff, int iOff, int vBase)> g in groupData)
+            foreach (KeyValuePair<(int pair, bool trans), (float[] v, uint[] ix, int vOff, int iOff, int vBase)> g in groupData)
             {
                 if (g.Value.ix.Length == 0)
                 {
@@ -222,8 +336,8 @@ namespace RaxicoreEditor.Editor.Rendering
                 _batches.Add(new GpuBatch
                 {
                     Vbuf = vbuf, Vmem = vmem, Ibuf = ibuf, Imem = imem,
-                    IndexCount = (uint)g.Value.ix.Length, DescSet = descSets[g.Key.tex],
-                    Translucent = g.Key.trans, HostVisible = false,
+                    IndexCount = (uint)g.Value.ix.Length, VertexCount = (uint)(g.Value.v.Length / 14),
+                    DescSet = pairDescSets[g.Key.pair], Translucent = g.Key.trans, HostVisible = false,
                 });
             }
 
@@ -236,7 +350,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 {
                     continue;
                 }
-                float[] vbData = BuildVertexBuffer(s.Vertices, s.Colors);
+                float[] vbData = BuildVertexBuffer(s.Vertices, s.Colors, s.DetailTileRate);
                 (Silk.NET.Vulkan.Buffer vbuf, DeviceMemory vmem) =
                     CreateHostBuffer<float>(vbData, BufferUsageFlags.VertexBufferBit);
                 (Silk.NET.Vulkan.Buffer ibuf, DeviceMemory imem) =
@@ -245,23 +359,27 @@ namespace RaxicoreEditor.Editor.Rendering
                 _batches.Add(new GpuBatch
                 {
                     Vbuf = vbuf, Vmem = vmem, Ibuf = ibuf, Imem = imem,
-                    IndexCount = (uint)s.Indices.Length, DescSet = descSets[TexOf(s)],
-                    Translucent = s.IsTranslucent, HostVisible = true,
+                    IndexCount = (uint)s.Indices.Length, VertexCount = (uint)(vbData.Length / 14),
+                    DescSet = pairDescSets[PairOf(s)], Translucent = s.IsTranslucent, HostVisible = true,
                 });
             }
+
+            BuildRayTracingScene();
         }
 
         /// <summary>Number of GPU draw batches (merged static groups + individual skinned submeshes).</summary>
         public int SubmeshCount => _batches.Count;
 
         // Interleave one submesh's stride-8 geometry + optional stride-4 colour directly into the merged
-        // group array at float offset <paramref name="dstOff"/> (stride-12), avoiding a per-submesh temp.
-        private static void AppendVertices(float[] dst, int dstOff, float[] v8, float[]? c4)
+        // group array at float offset <paramref name="dstOff"/> (stride-14), avoiding a per-submesh temp.
+        // The trailing 2 floats are the detail-texture UV (base UV * tileRate), baked once here at build
+        // time — cheaper than a per-frame shader uniform and correct since tileRate is a material constant.
+        private static void AppendVertices(float[] dst, int dstOff, float[] v8, float[]? c4, float tileRate)
         {
             int vc = v8.Length / 8;
             for (int i = 0; i < vc; i++)
             {
-                int si = i * 8, di = dstOff + i * 12;
+                int si = i * 8, di = dstOff + i * 14;
                 dst[di + 0] = v8[si + 0]; dst[di + 1] = v8[si + 1]; dst[di + 2] = v8[si + 2];
                 dst[di + 3] = v8[si + 3]; dst[di + 4] = v8[si + 4]; dst[di + 5] = v8[si + 5];
                 dst[di + 6] = v8[si + 6]; dst[di + 7] = v8[si + 7];
@@ -274,18 +392,20 @@ namespace RaxicoreEditor.Editor.Rendering
                 {
                     dst[di + 8] = 1f; dst[di + 9] = 1f; dst[di + 10] = 1f; dst[di + 11] = 1f;
                 }
+                dst[di + 12] = v8[si + 6] * tileRate; dst[di + 13] = v8[si + 7] * tileRate;
             }
         }
 
-        // Interleave stride-8 geometry (pos3, normal3, uv2) with stride-4 baked colour (rgba) into the
-        // stride-12 vertex all four mesh pipelines read. Colour defaults to white when none is supplied.
-        private static float[] BuildVertexBuffer(float[] v8, float[]? c4)
+        // Interleave stride-8 geometry (pos3, normal3, uv2) with stride-4 baked colour (rgba) and a
+        // detail UV (base uv * tileRate) into the stride-14 vertex all four mesh pipelines read. Colour
+        // defaults to white when none is supplied.
+        private static float[] BuildVertexBuffer(float[] v8, float[]? c4, float tileRate)
         {
             int vc = v8.Length / 8;
-            var outp = new float[vc * 12];
+            var outp = new float[vc * 14];
             for (int i = 0; i < vc; i++)
             {
-                int si = i * 8, di = i * 12;
+                int si = i * 8, di = i * 14;
                 outp[di + 0] = v8[si + 0]; outp[di + 1] = v8[si + 1]; outp[di + 2] = v8[si + 2];
                 outp[di + 3] = v8[si + 3]; outp[di + 4] = v8[si + 4]; outp[di + 5] = v8[si + 5];
                 outp[di + 6] = v8[si + 6]; outp[di + 7] = v8[si + 7];
@@ -298,6 +418,7 @@ namespace RaxicoreEditor.Editor.Rendering
                 {
                     outp[di + 8] = 1f; outp[di + 9] = 1f; outp[di + 10] = 1f; outp[di + 11] = 1f;
                 }
+                outp[di + 12] = v8[si + 6] * tileRate; outp[di + 13] = v8[si + 7] * tileRate;
             }
             return outp;
         }
@@ -320,11 +441,12 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 return;
             }
-            // The GPU buffer is stride-12 (geometry + baked colour); the incoming skinned data is stride-8
-            // geometry only. Write the 8 geometry floats of each vertex and leave the 4 colour floats (set at
-            // upload) untouched, so re-skinning a pre-lit part keeps its baked colour.
+            // The GPU buffer is stride-14 (geometry + baked colour + detail UV); the incoming skinned data
+            // is stride-8 geometry only. Write the 8 geometry floats of each vertex and leave the 4 colour
+            // floats and 2 detail-UV floats (set at upload) untouched, so re-skinning a pre-lit part keeps
+            // its baked colour and detail tiling.
             int vc = verts.Length / 8;
-            ulong size = (ulong)((long)vc * 12 * sizeof(float));
+            ulong size = (ulong)((long)vc * 14 * sizeof(float));
             void* mapped = null;
             _vk.MapMemory(_dev, s.Vmem, 0, size, 0, ref mapped);
             var dst = (float*)mapped;
@@ -332,7 +454,7 @@ namespace RaxicoreEditor.Editor.Rendering
             {
                 for (int i = 0; i < vc; i++)
                 {
-                    float* d = dst + i * 12;
+                    float* d = dst + i * 14;
                     float* sp = src + i * 8;
                     for (int k = 0; k < 8; k++) d[k] = sp[k];
                 }
@@ -469,6 +591,14 @@ namespace RaxicoreEditor.Editor.Rendering
             VulkanContext.Check(_vk.CreateFramebuffer(_dev, &fci, null, &fb), "CreateFramebuffer");
             _framebuffer = fb;
 
+            if (_ctx.SupportsRayTracing)
+            {
+                (_rtColorImage, _rtColorMem) = CreateImage(width, height, RtColorFormat,
+                    ImageUsageFlags.StorageBit | ImageUsageFlags.TransferSrcBit);
+                _rtColorView = CreateImageView(_rtColorImage, RtColorFormat, ImageAspectFlags.ColorBit);
+                WriteRtImageDescriptor();
+            }
+
             ulong size = (ulong)width * (ulong)height * 4UL;
             CreateReadbackBuffer(size);
         }
@@ -529,6 +659,9 @@ namespace RaxicoreEditor.Editor.Rendering
                 return false;
             }
 
+            bool rt = RenderSettings.RayTracing && _ctx.SupportsRayTracing && _rtPipelineReady &&
+                      _rtSceneReady && _rtColorImage.Handle != 0;
+
             _vk.ResetCommandBuffer(_cmd, 0);
             var bi = new CommandBufferBeginInfo
             {
@@ -537,6 +670,63 @@ namespace RaxicoreEditor.Editor.Rendering
             };
             _vk.BeginCommandBuffer(_cmd, &bi);
 
+            if (rt)
+            {
+                RecordRayTrace(mvp);
+            }
+            else
+            {
+                RecordRasterize(mvp, model);
+            }
+
+            var region = new BufferImageCopy
+            {
+                BufferOffset = 0,
+                BufferRowLength = 0,
+                BufferImageHeight = 0,
+                ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
+                ImageOffset = new Offset3D(0, 0, 0),
+                ImageExtent = new Extent3D((uint)_width, (uint)_height, 1),
+            };
+            Image srcImage = rt ? _rtColorImage : _colorImage;
+            _vk.CmdCopyImageToBuffer(_cmd, srcImage, ImageLayout.TransferSrcOptimal, _readback, 1, &region);
+
+            _vk.EndCommandBuffer(_cmd);
+
+            var cmd = _cmd;
+            var submit = new SubmitInfo
+            {
+                SType = StructureType.SubmitInfo,
+                CommandBufferCount = 1,
+                PCommandBuffers = &cmd,
+            };
+            _vk.ResetFences(_dev, 1, in _fence);
+            VulkanContext.Check(_vk.QueueSubmit(_ctx.GraphicsQueue, 1, &submit, _fence), "QueueSubmit");
+            _vk.WaitForFences(_dev, 1, in _fence, true, ulong.MaxValue);
+
+            ulong size = (ulong)_width * (ulong)_height * 4UL;
+            void* mapped = null;
+            _vk.MapMemory(_dev, _readbackMem, 0, size, 0, ref mapped);
+            // HOST_CACHED readback memory may be non-coherent: make the GPU's writes visible to the CPU
+            // cache before reading. (Coherent memory needs no invalidation.)
+            if (!_readbackCoherent)
+            {
+                var range = new MappedMemoryRange
+                {
+                    SType = StructureType.MappedMemoryRange,
+                    Memory = _readbackMem,
+                    Offset = 0,
+                    Size = Vk.WholeSize,
+                };
+                _vk.InvalidateMappedMemoryRanges(_dev, 1, &range);
+            }
+            new ReadOnlySpan<byte>(mapped, (int)size).CopyTo(dst);
+            _vk.UnmapMemory(_dev, _readbackMem);
+            return true;
+        }
+
+        private void RecordRasterize(Matrix4x4 mvp, Matrix4x4 model)
+        {
             var clears = stackalloc ClearValue[2];
             clears[0] = new ClearValue(new ClearColorValue(0.04f, 0.04f, 0.05f, 1f));
             clears[1] = new ClearValue(depthStencil: new ClearDepthStencilValue(0f, 0)); // reversed-Z: far = 0
@@ -635,50 +825,61 @@ namespace RaxicoreEditor.Editor.Rendering
             }
 
             _vk.CmdEndRenderPass(_cmd);
+        }
 
-            var region = new BufferImageCopy
+        // Ray-traced equivalent of RecordRasterize: no render pass, dispatches vkCmdTraceRaysKHR into the
+        // dedicated RT output image (see RtColorFormat's doc comment for why it isn't _colorImage), with
+        // the layout transitions the render pass would otherwise have handled for us via its attachment
+        // description/subpass dependency.
+        private void RecordRayTrace(Matrix4x4 mvp)
+        {
+            var toGeneral = new ImageMemoryBarrier
             {
-                BufferOffset = 0,
-                BufferRowLength = 0,
-                BufferImageHeight = 0,
-                ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
-                ImageOffset = new Offset3D(0, 0, 0),
-                ImageExtent = new Extent3D((uint)_width, (uint)_height, 1),
+                SType = StructureType.ImageMemoryBarrier,
+                // Contents are irrelevant going in (every pixel is about to be overwritten by imageStore),
+                // so OldLayout = Undefined is correct regardless of the image's actual previous layout.
+                OldLayout = ImageLayout.Undefined,
+                NewLayout = ImageLayout.General,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = _rtColorImage,
+                SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+                DstAccessMask = AccessFlags.ShaderWriteBit,
             };
-            _vk.CmdCopyImageToBuffer(_cmd, _colorImage, ImageLayout.TransferSrcOptimal, _readback, 1, &region);
+            _vk.CmdPipelineBarrier(_cmd, PipelineStageFlags.TopOfPipeBit, PipelineStageFlags.RayTracingShaderBitKhr,
+                0, 0, null, 0, null, 1, &toGeneral);
 
-            _vk.EndCommandBuffer(_cmd);
+            _vk.CmdBindPipeline(_cmd, PipelineBindPoint.RayTracingKhr, _rtPipeline);
+            var ds = _rtDescSet;
+            _vk.CmdBindDescriptorSets(_cmd, PipelineBindPoint.RayTracingKhr, _rtPipelineLayout, 0, 1, &ds, 0, null);
 
-            var cmd = _cmd;
-            var submit = new SubmitInfo
+            // model is always identity in this viewer (see the caller of Render), so mvp == viewProj and
+            // its inverse is all the raygen shader needs to reconstruct world-space camera rays.
+            Matrix4x4.Invert(mvp, out Matrix4x4 invViewProj);
+            var push = stackalloc float[16];
+            CopyMatrix(invViewProj, push);
+            _vk.CmdPushConstants(_cmd, _rtPipelineLayout, ShaderStageFlags.RaygenBitKhr, 0, 64, push);
+
+            var raygen = _sbtRaygen;
+            var miss = _sbtMiss;
+            var hit = _sbtHit;
+            var callable = _sbtCallable;
+            _ctx.KhrRayTracingPipeline!.CmdTraceRays(_cmd, &raygen, &miss, &hit, &callable, (uint)_width, (uint)_height, 1);
+
+            var toTransferSrc = new ImageMemoryBarrier
             {
-                SType = StructureType.SubmitInfo,
-                CommandBufferCount = 1,
-                PCommandBuffers = &cmd,
+                SType = StructureType.ImageMemoryBarrier,
+                OldLayout = ImageLayout.General,
+                NewLayout = ImageLayout.TransferSrcOptimal,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = _rtColorImage,
+                SubresourceRange = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1),
+                SrcAccessMask = AccessFlags.ShaderWriteBit,
+                DstAccessMask = AccessFlags.TransferReadBit,
             };
-            _vk.ResetFences(_dev, 1, in _fence);
-            VulkanContext.Check(_vk.QueueSubmit(_ctx.GraphicsQueue, 1, &submit, _fence), "QueueSubmit");
-            _vk.WaitForFences(_dev, 1, in _fence, true, ulong.MaxValue);
-
-            ulong size = (ulong)_width * (ulong)_height * 4UL;
-            void* mapped = null;
-            _vk.MapMemory(_dev, _readbackMem, 0, size, 0, ref mapped);
-            // HOST_CACHED readback memory may be non-coherent: make the GPU's writes visible to the CPU
-            // cache before reading. (Coherent memory needs no invalidation.)
-            if (!_readbackCoherent)
-            {
-                var range = new MappedMemoryRange
-                {
-                    SType = StructureType.MappedMemoryRange,
-                    Memory = _readbackMem,
-                    Offset = 0,
-                    Size = Vk.WholeSize,
-                };
-                _vk.InvalidateMappedMemoryRanges(_dev, 1, &range);
-            }
-            new ReadOnlySpan<byte>(mapped, (int)size).CopyTo(dst);
-            _vk.UnmapMemory(_dev, _readbackMem);
-            return true;
+            _vk.CmdPipelineBarrier(_cmd, PipelineStageFlags.RayTracingShaderBitKhr, PipelineStageFlags.TransferBit,
+                0, 0, null, 0, null, 1, &toTransferSrc);
         }
 
         // ---- vulkan object creation ------------------------------------------------------------
@@ -746,9 +947,20 @@ namespace RaxicoreEditor.Editor.Rendering
 
         private void CreateDescriptorLayoutAndSampler()
         {
-            var binding = new DescriptorSetLayoutBinding
+            // binding0 = base albedo, binding1 = the tiled detail texture (materials.adb's mat_detail) --
+            // a neutral 50%-grey 1×1 when a material has none (see SetMesh), so the shader can always
+            // sample+blend both with no branch.
+            var bindings = stackalloc DescriptorSetLayoutBinding[2];
+            bindings[0] = new DescriptorSetLayoutBinding
             {
                 Binding = 0,
+                DescriptorType = DescriptorType.CombinedImageSampler,
+                DescriptorCount = 1,
+                StageFlags = ShaderStageFlags.FragmentBit,
+            };
+            bindings[1] = new DescriptorSetLayoutBinding
+            {
+                Binding = 1,
                 DescriptorType = DescriptorType.CombinedImageSampler,
                 DescriptorCount = 1,
                 StageFlags = ShaderStageFlags.FragmentBit,
@@ -756,8 +968,8 @@ namespace RaxicoreEditor.Editor.Rendering
             var dlci = new DescriptorSetLayoutCreateInfo
             {
                 SType = StructureType.DescriptorSetLayoutCreateInfo,
-                BindingCount = 1,
-                PBindings = &binding,
+                BindingCount = 2,
+                PBindings = bindings,
             };
             DescriptorSetLayout layout;
             VulkanContext.Check(_vk.CreateDescriptorSetLayout(_dev, &dlci, null, &layout), "DescriptorSetLayout");
@@ -782,10 +994,11 @@ namespace RaxicoreEditor.Editor.Rendering
 
         private void CreateDescriptorPool(uint maxSets)
         {
+            // 2 combined-image-sampler descriptors per set (base + detail texture).
             var poolSize = new DescriptorPoolSize
             {
                 Type = DescriptorType.CombinedImageSampler,
-                DescriptorCount = maxSets,
+                DescriptorCount = maxSets * 2,
             };
             var pci = new DescriptorPoolCreateInfo
             {
@@ -799,7 +1012,7 @@ namespace RaxicoreEditor.Editor.Rendering
             _descPool = pool;
         }
 
-        private DescriptorSet AllocateTextureDescriptor(ImageView view)
+        private DescriptorSet AllocateTextureDescriptor(ImageView baseView, ImageView detailView)
         {
             DescriptorSetLayout layout = _descLayout;
             var ai = new DescriptorSetAllocateInfo
@@ -812,13 +1025,20 @@ namespace RaxicoreEditor.Editor.Rendering
             DescriptorSet set;
             VulkanContext.Check(_vk.AllocateDescriptorSets(_dev, &ai, &set), "AllocateDescriptorSets");
 
-            var imageInfo = new DescriptorImageInfo
+            var baseInfo = new DescriptorImageInfo
             {
                 Sampler = _sampler,
-                ImageView = view,
+                ImageView = baseView,
                 ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
             };
-            var write = new WriteDescriptorSet
+            var detailInfo = new DescriptorImageInfo
+            {
+                Sampler = _sampler,
+                ImageView = detailView,
+                ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+            };
+            var writes = stackalloc WriteDescriptorSet[2];
+            writes[0] = new WriteDescriptorSet
             {
                 SType = StructureType.WriteDescriptorSet,
                 DstSet = set,
@@ -826,9 +1046,19 @@ namespace RaxicoreEditor.Editor.Rendering
                 DstArrayElement = 0,
                 DescriptorType = DescriptorType.CombinedImageSampler,
                 DescriptorCount = 1,
-                PImageInfo = &imageInfo,
+                PImageInfo = &baseInfo,
             };
-            _vk.UpdateDescriptorSets(_dev, 1, &write, 0, null);
+            writes[1] = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet,
+                DstSet = set,
+                DstBinding = 1,
+                DstArrayElement = 0,
+                DescriptorType = DescriptorType.CombinedImageSampler,
+                DescriptorCount = 1,
+                PImageInfo = &detailInfo,
+            };
+            _vk.UpdateDescriptorSets(_dev, 2, writes, 0, null);
             return set;
         }
 
@@ -934,8 +1164,9 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.FreeCommandBuffers(_dev, _ctx.CommandPool, 1, &cmd);
         }
 
-        // Shared pipeline layout for all four mesh pipelines (opaque/blend × generic/engine): one texture
-        // sampler (set 0) + a 128-byte vertex push constant (mvp, model).
+        // Shared pipeline layout for all four mesh pipelines (opaque/blend × generic/engine): base +
+        // detail texture samplers (set 0) + a 128-byte vertex push constant (mvp, model). The engine
+        // pipelines only ever sample binding0 — declaring more bindings than a given shader reads is legal.
         private void CreatePipelineLayout()
         {
             var pcRange = new PushConstantRange(ShaderStageFlags.VertexBit, 0, 128);
@@ -977,18 +1208,19 @@ namespace RaxicoreEditor.Editor.Rendering
                 PName = entry,
             };
 
-            var binding = new VertexInputBindingDescription(0, 48, VertexInputRate.Vertex);
-            var attrs = stackalloc VertexInputAttributeDescription[4];
+            var binding = new VertexInputBindingDescription(0, 56, VertexInputRate.Vertex);
+            var attrs = stackalloc VertexInputAttributeDescription[5];
             attrs[0] = new VertexInputAttributeDescription(0, 0, Format.R32G32B32Sfloat, 0);   // pos
             attrs[1] = new VertexInputAttributeDescription(1, 0, Format.R32G32B32Sfloat, 12);  // normal
             attrs[2] = new VertexInputAttributeDescription(2, 0, Format.R32G32Sfloat, 24);     // uv
             attrs[3] = new VertexInputAttributeDescription(3, 0, Format.R32G32B32A32Sfloat, 32); // baked colour (rgba)
+            attrs[4] = new VertexInputAttributeDescription(4, 0, Format.R32G32Sfloat, 48);     // detail uv (= uv * tileRate)
             var vi = new PipelineVertexInputStateCreateInfo
             {
                 SType = StructureType.PipelineVertexInputStateCreateInfo,
                 VertexBindingDescriptionCount = 1,
                 PVertexBindingDescriptions = &binding,
-                VertexAttributeDescriptionCount = 4,
+                VertexAttributeDescriptionCount = 5,
                 PVertexAttributeDescriptions = attrs,
             };
             var ia = new PipelineInputAssemblyStateCreateInfo
@@ -1097,18 +1329,19 @@ namespace RaxicoreEditor.Editor.Rendering
                 PName = entry,
             };
 
-            var binding = new VertexInputBindingDescription(0, 48, VertexInputRate.Vertex);
-            var attrs = stackalloc VertexInputAttributeDescription[4];
+            var binding = new VertexInputBindingDescription(0, 56, VertexInputRate.Vertex);
+            var attrs = stackalloc VertexInputAttributeDescription[5];
             attrs[0] = new VertexInputAttributeDescription(0, 0, Format.R32G32B32Sfloat, 0);   // pos
             attrs[1] = new VertexInputAttributeDescription(1, 0, Format.R32G32B32Sfloat, 12);  // normal
             attrs[2] = new VertexInputAttributeDescription(2, 0, Format.R32G32Sfloat, 24);     // uv
             attrs[3] = new VertexInputAttributeDescription(3, 0, Format.R32G32B32A32Sfloat, 32); // baked colour (rgba)
+            attrs[4] = new VertexInputAttributeDescription(4, 0, Format.R32G32Sfloat, 48);     // detail uv (= uv * tileRate)
             var vi = new PipelineVertexInputStateCreateInfo
             {
                 SType = StructureType.PipelineVertexInputStateCreateInfo,
                 VertexBindingDescriptionCount = 1,
                 PVertexBindingDescriptions = &binding,
-                VertexAttributeDescriptionCount = 4,
+                VertexAttributeDescriptionCount = 5,
                 PVertexAttributeDescriptions = attrs,
             };
             var ia = new PipelineInputAssemblyStateCreateInfo
@@ -1205,7 +1438,7 @@ namespace RaxicoreEditor.Editor.Rendering
             byte* entry = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("main");
 
             var pcRange = new PushConstantRange(ShaderStageFlags.FragmentBit, 0, 96); // mat4 invRayVp + vec4 tint + vec4 horizon
-            DescriptorSetLayout descLayout = _descLayout;                            // one combined-image-sampler
+            DescriptorSetLayout descLayout = _descLayout;                            // sky.frag only samples binding0
             var plci = new PipelineLayoutCreateInfo
             {
                 SType = StructureType.PipelineLayoutCreateInfo,
@@ -1250,8 +1483,11 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.DestroyShaderModule(_dev, fs, null);
             Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
 
-            // Dedicated descriptor pool + set for the sky panorama, persistent across mesh reloads.
-            var skyPoolSize = new DescriptorPoolSize { Type = DescriptorType.CombinedImageSampler, DescriptorCount = 1 };
+            // Dedicated descriptor pool + set for the sky panorama, persistent across mesh reloads. Sized
+            // for 2 combined-image-samplers per set (matching _descLayout's binding0+binding1) even though
+            // sky.frag only ever reads binding0 -- allocating a set from a layout reserves capacity for
+            // every binding in that layout, regardless of which ones the pipeline using it actually samples.
+            var skyPoolSize = new DescriptorPoolSize { Type = DescriptorType.CombinedImageSampler, DescriptorCount = 2 };
             var skyPci = new DescriptorPoolCreateInfo { SType = StructureType.DescriptorPoolCreateInfo, PoolSizeCount = 1, PPoolSizes = &skyPoolSize, MaxSets = 1 };
             DescriptorPool skyPool;
             VulkanContext.Check(_vk.CreateDescriptorPool(_dev, &skyPci, null, &skyPool), "SkyDescriptorPool");
@@ -1421,6 +1657,479 @@ namespace RaxicoreEditor.Editor.Rendering
             _fence = fence;
         }
 
+        // ---- ray tracing pipeline (built once; independent of any loaded mesh) -----------------------
+
+        // Descriptor set layout: binding 0 = TLAS (raygen), binding 1 = output storage image (raygen),
+        // binding 2 = per-instance vertex/index buffer-address SSBO (closest-hit). Push constant carries
+        // the inverse view-projection the raygen shader unprojects screen pixels through.
+        private void CreateRayTracingPipeline()
+        {
+            if (!_ctx.SupportsRayTracing)
+            {
+                return;
+            }
+            KhrRayTracingPipeline khrRtp = _ctx.KhrRayTracingPipeline!;
+
+            var dslBindings = stackalloc DescriptorSetLayoutBinding[3];
+            dslBindings[0] = new DescriptorSetLayoutBinding
+            {
+                Binding = 0, DescriptorType = DescriptorType.AccelerationStructureKhr,
+                DescriptorCount = 1, StageFlags = ShaderStageFlags.RaygenBitKhr,
+            };
+            dslBindings[1] = new DescriptorSetLayoutBinding
+            {
+                Binding = 1, DescriptorType = DescriptorType.StorageImage,
+                DescriptorCount = 1, StageFlags = ShaderStageFlags.RaygenBitKhr,
+            };
+            dslBindings[2] = new DescriptorSetLayoutBinding
+            {
+                Binding = 2, DescriptorType = DescriptorType.StorageBuffer,
+                DescriptorCount = 1, StageFlags = ShaderStageFlags.ClosestHitBitKhr,
+            };
+            var dslCi = new DescriptorSetLayoutCreateInfo
+            {
+                SType = StructureType.DescriptorSetLayoutCreateInfo, BindingCount = 3, PBindings = dslBindings,
+            };
+            DescriptorSetLayout dsl;
+            VulkanContext.Check(_vk.CreateDescriptorSetLayout(_dev, &dslCi, null, &dsl), "DescriptorSetLayout(rt)");
+            _rtDescLayout = dsl;
+
+            var pcRange = new PushConstantRange(ShaderStageFlags.RaygenBitKhr, 0, 64); // mat4 invViewProj
+            var plCi = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+                SetLayoutCount = 1, PSetLayouts = &dsl,
+                PushConstantRangeCount = 1, PPushConstantRanges = &pcRange,
+            };
+            PipelineLayout pipeLayout;
+            VulkanContext.Check(_vk.CreatePipelineLayout(_dev, &plCi, null, &pipeLayout), "PipelineLayout(rt)");
+            _rtPipelineLayout = pipeLayout;
+
+            ShaderModule rgen = CreateShader(LoadEmbedded("mesh.rgen.spv"));
+            ShaderModule rmiss = CreateShader(LoadEmbedded("mesh.rmiss.spv"));
+            ShaderModule rchit = CreateShader(LoadEmbedded("mesh.rchit.spv"));
+            byte* entry = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("main");
+
+            var stages = stackalloc PipelineShaderStageCreateInfo[3];
+            stages[0] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.RaygenBitKhr, Module = rgen, PName = entry,
+            };
+            stages[1] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.MissBitKhr, Module = rmiss, PName = entry,
+            };
+            stages[2] = new PipelineShaderStageCreateInfo
+            {
+                SType = StructureType.PipelineShaderStageCreateInfo,
+                Stage = ShaderStageFlags.ClosestHitBitKhr, Module = rchit, PName = entry,
+            };
+
+            var groups = stackalloc RayTracingShaderGroupCreateInfoKHR[3];
+            groups[0] = new RayTracingShaderGroupCreateInfoKHR
+            {
+                SType = StructureType.RayTracingShaderGroupCreateInfoKhr, Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
+                GeneralShader = 0, ClosestHitShader = Vk.ShaderUnusedKhr, AnyHitShader = Vk.ShaderUnusedKhr, IntersectionShader = Vk.ShaderUnusedKhr,
+            };
+            groups[1] = new RayTracingShaderGroupCreateInfoKHR
+            {
+                SType = StructureType.RayTracingShaderGroupCreateInfoKhr, Type = RayTracingShaderGroupTypeKHR.GeneralKhr,
+                GeneralShader = 1, ClosestHitShader = Vk.ShaderUnusedKhr, AnyHitShader = Vk.ShaderUnusedKhr, IntersectionShader = Vk.ShaderUnusedKhr,
+            };
+            groups[2] = new RayTracingShaderGroupCreateInfoKHR
+            {
+                SType = StructureType.RayTracingShaderGroupCreateInfoKhr, Type = RayTracingShaderGroupTypeKHR.TrianglesHitGroupKhr,
+                GeneralShader = Vk.ShaderUnusedKhr, ClosestHitShader = 2, AnyHitShader = Vk.ShaderUnusedKhr, IntersectionShader = Vk.ShaderUnusedKhr,
+            };
+
+            var rtpCi = new RayTracingPipelineCreateInfoKHR
+            {
+                SType = StructureType.RayTracingPipelineCreateInfoKhr,
+                StageCount = 3, PStages = stages, GroupCount = 3, PGroups = groups,
+                MaxPipelineRayRecursionDepth = 1, Layout = pipeLayout,
+            };
+            Pipeline pipeline;
+            VulkanContext.Check(
+                khrRtp.CreateRayTracingPipelines(_dev, new DeferredOperationKHR(), default, 1, &rtpCi, null, &pipeline),
+                "CreateRayTracingPipelines");
+            _rtPipeline = pipeline;
+
+            _vk.DestroyShaderModule(_dev, rgen, null);
+            _vk.DestroyShaderModule(_dev, rmiss, null);
+            _vk.DestroyShaderModule(_dev, rchit, null);
+            Silk.NET.Core.Native.SilkMarshal.Free((nint)entry);
+
+            BuildShaderBindingTable(khrRtp);
+
+            var poolSizes = stackalloc DescriptorPoolSize[3];
+            poolSizes[0] = new DescriptorPoolSize { Type = DescriptorType.AccelerationStructureKhr, DescriptorCount = 1 };
+            poolSizes[1] = new DescriptorPoolSize { Type = DescriptorType.StorageImage, DescriptorCount = 1 };
+            poolSizes[2] = new DescriptorPoolSize { Type = DescriptorType.StorageBuffer, DescriptorCount = 1 };
+            var dpCi = new DescriptorPoolCreateInfo
+            {
+                SType = StructureType.DescriptorPoolCreateInfo, MaxSets = 1, PoolSizeCount = 3, PPoolSizes = poolSizes,
+            };
+            DescriptorPool pool;
+            VulkanContext.Check(_vk.CreateDescriptorPool(_dev, &dpCi, null, &pool), "DescriptorPool(rt)");
+            _rtDescPool = pool;
+
+            var dsAlloc = new DescriptorSetAllocateInfo
+            {
+                SType = StructureType.DescriptorSetAllocateInfo, DescriptorPool = _rtDescPool,
+                DescriptorSetCount = 1, PSetLayouts = &dsl,
+            };
+            DescriptorSet set;
+            VulkanContext.Check(_vk.AllocateDescriptorSets(_dev, &dsAlloc, &set), "AllocateDescriptorSets(rt)");
+            _rtDescSet = set;
+
+            _rtPipelineReady = true;
+        }
+
+        private void BuildShaderBindingTable(KhrRayTracingPipeline khrRtp)
+        {
+            PhysicalDeviceRayTracingPipelinePropertiesKHR props = _ctx.RayTracingProperties;
+            uint handleSize = props.ShaderGroupHandleSize;
+            uint handleSizeAligned = AlignUp(handleSize, props.ShaderGroupHandleAlignment);
+
+            const uint groupCount = 3;
+            uint handlesTotalSize = groupCount * handleSize;
+            byte[] handles = new byte[handlesTotalSize];
+            fixed (byte* pHandles = handles)
+            {
+                VulkanContext.Check(
+                    khrRtp.GetRayTracingShaderGroupHandles(_dev, _rtPipeline, 0, groupCount, (nuint)handlesTotalSize, pHandles),
+                    "GetRayTracingShaderGroupHandles");
+            }
+
+            // One region per group (raygen, miss, hit), each padded to the base alignment; one handle each.
+            ulong regionSize = AlignUp((ulong)handleSizeAligned, props.ShaderGroupBaseAlignment);
+            ulong sbtSize = regionSize * groupCount;
+            (_sbtBuffer, _sbtMem) = CreateBuffer(sbtSize,
+                BufferUsageFlags.ShaderBindingTableBitKhr | BufferUsageFlags.ShaderDeviceAddressBit | BufferUsageFlags.TransferDstBit,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+
+            void* mapped = null;
+            _vk.MapMemory(_dev, _sbtMem, 0, sbtSize, 0, ref mapped);
+            byte* sbtBytes = (byte*)mapped;
+            fixed (byte* pHandles = handles)
+            {
+                for (uint g = 0; g < groupCount; g++)
+                {
+                    System.Buffer.MemoryCopy(pHandles + g * handleSize, sbtBytes + (ulong)g * regionSize, handleSize, handleSize);
+                }
+            }
+            _vk.UnmapMemory(_dev, _sbtMem);
+
+            ulong sbtAddr = GetBufferAddress(_sbtBuffer);
+            _sbtRaygen = new StridedDeviceAddressRegionKHR { DeviceAddress = sbtAddr + 0 * regionSize, Stride = regionSize, Size = regionSize };
+            _sbtMiss = new StridedDeviceAddressRegionKHR { DeviceAddress = sbtAddr + 1 * regionSize, Stride = regionSize, Size = regionSize };
+            _sbtHit = new StridedDeviceAddressRegionKHR { DeviceAddress = sbtAddr + 2 * regionSize, Stride = regionSize, Size = regionSize };
+            _sbtCallable = default;
+        }
+
+        // Builds one BLAS per opaque/non-skinned batch + one TLAS (identity-transform instances) + the
+        // per-instance vertex/index device-address SSBO the closest-hit shader indexes with
+        // gl_InstanceCustomIndexEXT. Called once per SetMesh (after _batches is populated) and tears down
+        // whatever scene existed before.
+        private void BuildRayTracingScene()
+        {
+            DestroyRayTracingScene();
+            if (!_ctx.SupportsRayTracing)
+            {
+                return;
+            }
+            KhrAccelerationStructure khrAs = _ctx.KhrAccelerationStructure!;
+
+            var eligible = new List<int>();
+            for (int i = 0; i < _batches.Count; i++)
+            {
+                GpuBatch b = _batches[i];
+                if (!b.Translucent && !b.HostVisible && b.IndexCount > 0)
+                {
+                    eligible.Add(i);
+                }
+            }
+            if (eligible.Count == 0)
+            {
+                return;
+            }
+
+            var instDescs = new RtInstanceDesc[eligible.Count];
+            var instances = new AccelerationStructureInstanceKHR[eligible.Count];
+
+            for (int idx = 0; idx < eligible.Count; idx++)
+            {
+                GpuBatch b = _batches[eligible[idx]];
+                ulong vAddr = GetBufferAddress(b.Vbuf);
+                ulong iAddr = GetBufferAddress(b.Ibuf);
+                instDescs[idx] = new RtInstanceDesc { VertexAddr = vAddr, IndexAddr = iAddr };
+                uint maxVertex = b.VertexCount > 0 ? b.VertexCount - 1 : 0;
+                uint primCount = b.IndexCount / 3;
+
+                AccelerationStructureGeometryKHR sizingGeom = MakeBlasGeometry(vAddr, iAddr, maxVertex);
+                var sizingInfo = new AccelerationStructureBuildGeometryInfoKHR
+                {
+                    SType = StructureType.AccelerationStructureBuildGeometryInfoKhr,
+                    Type = AccelerationStructureTypeKHR.BottomLevelKhr,
+                    Flags = BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr,
+                    Mode = BuildAccelerationStructureModeKHR.BuildKhr,
+                    GeometryCount = 1, PGeometries = &sizingGeom,
+                };
+                var sizeInfo = new AccelerationStructureBuildSizesInfoKHR { SType = StructureType.AccelerationStructureBuildSizesInfoKhr };
+                khrAs.GetAccelerationStructureBuildSizes(_dev, AccelerationStructureBuildTypeKHR.DeviceKhr, &sizingInfo, &primCount, &sizeInfo);
+
+                (Silk.NET.Vulkan.Buffer asBuf, DeviceMemory asMem) = CreateBuffer(sizeInfo.AccelerationStructureSize,
+                    BufferUsageFlags.AccelerationStructureStorageBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+                    MemoryPropertyFlags.DeviceLocalBit);
+                var asCi = new AccelerationStructureCreateInfoKHR
+                {
+                    SType = StructureType.AccelerationStructureCreateInfoKhr,
+                    Buffer = asBuf, Size = sizeInfo.AccelerationStructureSize, Type = AccelerationStructureTypeKHR.BottomLevelKhr,
+                };
+                AccelerationStructureKHR blas;
+                VulkanContext.Check(khrAs.CreateAccelerationStructure(_dev, &asCi, null, &blas), "CreateAccelerationStructure(BLAS)");
+
+                (Silk.NET.Vulkan.Buffer scratchBuf, DeviceMemory scratchMem) = CreateBuffer(sizeInfo.BuildScratchSize,
+                    BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+                    MemoryPropertyFlags.DeviceLocalBit);
+                ulong scratchAddr = GetBufferAddress(scratchBuf);
+
+                // buildGeometry/buildInfo/range are declared fresh INSIDE the lambda (not captured from the
+                // outer scope) so taking their address here doesn't hit CS1686 ("cannot take address of a
+                // closure-captured local") -- only genuinely local-to-the-closure variables get their
+                // address taken; everything from the outer scope (vAddr, iAddr, maxVertex, blas,
+                // scratchAddr, primCount, khrAs) is captured by value/reference and merely read.
+                AccelerationStructureKHR blasCaptured = blas;
+                uint primCountCaptured = primCount;
+                OneTimeSubmit(cmd =>
+                {
+                    AccelerationStructureGeometryKHR buildGeometry = MakeBlasGeometry(vAddr, iAddr, maxVertex);
+                    var buildInfo = new AccelerationStructureBuildGeometryInfoKHR
+                    {
+                        SType = StructureType.AccelerationStructureBuildGeometryInfoKhr,
+                        Type = AccelerationStructureTypeKHR.BottomLevelKhr,
+                        Flags = BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr,
+                        Mode = BuildAccelerationStructureModeKHR.BuildKhr,
+                        GeometryCount = 1, PGeometries = &buildGeometry,
+                        DstAccelerationStructure = blasCaptured,
+                        ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = scratchAddr },
+                    };
+                    var range = new AccelerationStructureBuildRangeInfoKHR { PrimitiveCount = primCountCaptured };
+                    var pRange = &range;
+                    khrAs.CmdBuildAccelerationStructures(cmd, 1, &buildInfo, &pRange);
+                });
+
+                _vk.DestroyBuffer(_dev, scratchBuf, null);
+                _vk.FreeMemory(_dev, scratchMem, null);
+
+                var addrInfo = new AccelerationStructureDeviceAddressInfoKHR
+                {
+                    SType = StructureType.AccelerationStructureDeviceAddressInfoKhr, AccelerationStructure = blas,
+                };
+                ulong blasAddress = khrAs.GetAccelerationStructureDeviceAddress(_dev, &addrInfo);
+                _rtBlas.Add(new RtBlas { Buffer = asBuf, Mem = asMem, Handle = blas });
+
+                var inst = new AccelerationStructureInstanceKHR
+                {
+                    Mask = 0xFF,
+                    InstanceCustomIndex = (uint)idx,
+                    InstanceShaderBindingTableRecordOffset = 0,
+                    Flags = GeometryInstanceFlagsKHR.TriangleFacingCullDisableBitKhr,
+                    AccelerationStructureReference = blasAddress,
+                };
+                // Identity 3x4 row-major transform (the viewer's model matrix is always identity -- see
+                // MeshViewportRenderer.Render's caller -- so instance-space == world-space already).
+                inst.Transform.Matrix[0] = 1; inst.Transform.Matrix[5] = 1; inst.Transform.Matrix[10] = 1;
+                instances[idx] = inst;
+            }
+
+            ulong instSize = (ulong)(instances.Length * sizeof(AccelerationStructureInstanceKHR));
+            (Silk.NET.Vulkan.Buffer instBuf, DeviceMemory instMem) = CreateBuffer(instSize,
+                BufferUsageFlags.ShaderDeviceAddressBit | BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr,
+                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+            void* instMapped = null;
+            _vk.MapMemory(_dev, instMem, 0, instSize, 0, ref instMapped);
+            fixed (AccelerationStructureInstanceKHR* src = instances)
+            {
+                System.Buffer.MemoryCopy(src, instMapped, instSize, instSize);
+            }
+            _vk.UnmapMemory(_dev, instMem);
+            ulong instAddr = GetBufferAddress(instBuf);
+
+            uint tlasPrimCount = (uint)instances.Length;
+            AccelerationStructureGeometryKHR sizingTlasGeom = MakeTlasGeometry(instAddr);
+            var sizingTlasInfo = new AccelerationStructureBuildGeometryInfoKHR
+            {
+                SType = StructureType.AccelerationStructureBuildGeometryInfoKhr,
+                Type = AccelerationStructureTypeKHR.TopLevelKhr,
+                Flags = BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr,
+                Mode = BuildAccelerationStructureModeKHR.BuildKhr,
+                GeometryCount = 1, PGeometries = &sizingTlasGeom,
+            };
+            var tlasSizeInfo = new AccelerationStructureBuildSizesInfoKHR { SType = StructureType.AccelerationStructureBuildSizesInfoKhr };
+            khrAs.GetAccelerationStructureBuildSizes(_dev, AccelerationStructureBuildTypeKHR.DeviceKhr, &sizingTlasInfo, &tlasPrimCount, &tlasSizeInfo);
+
+            (Silk.NET.Vulkan.Buffer tlasBuf, DeviceMemory tlasMem) = CreateBuffer(tlasSizeInfo.AccelerationStructureSize,
+                BufferUsageFlags.AccelerationStructureStorageBitKhr | BufferUsageFlags.ShaderDeviceAddressBit,
+                MemoryPropertyFlags.DeviceLocalBit);
+            var tlasCi = new AccelerationStructureCreateInfoKHR
+            {
+                SType = StructureType.AccelerationStructureCreateInfoKhr,
+                Buffer = tlasBuf, Size = tlasSizeInfo.AccelerationStructureSize, Type = AccelerationStructureTypeKHR.TopLevelKhr,
+            };
+            AccelerationStructureKHR tlas;
+            VulkanContext.Check(khrAs.CreateAccelerationStructure(_dev, &tlasCi, null, &tlas), "CreateAccelerationStructure(TLAS)");
+
+            (Silk.NET.Vulkan.Buffer tlasScratch, DeviceMemory tlasScratchMem) = CreateBuffer(tlasSizeInfo.BuildScratchSize,
+                BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit,
+                MemoryPropertyFlags.DeviceLocalBit);
+            ulong tlasScratchAddr = GetBufferAddress(tlasScratch);
+
+            AccelerationStructureKHR tlasCaptured = tlas;
+            uint tlasPrimCountCaptured = tlasPrimCount;
+            OneTimeSubmit(cmd =>
+            {
+                AccelerationStructureGeometryKHR geom = MakeTlasGeometry(instAddr);
+                var buildInfo = new AccelerationStructureBuildGeometryInfoKHR
+                {
+                    SType = StructureType.AccelerationStructureBuildGeometryInfoKhr,
+                    Type = AccelerationStructureTypeKHR.TopLevelKhr,
+                    Flags = BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr,
+                    Mode = BuildAccelerationStructureModeKHR.BuildKhr,
+                    GeometryCount = 1, PGeometries = &geom,
+                    DstAccelerationStructure = tlasCaptured,
+                    ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = tlasScratchAddr },
+                };
+                var range = new AccelerationStructureBuildRangeInfoKHR { PrimitiveCount = tlasPrimCountCaptured };
+                var pRange = &range;
+                // The instance buffer was just written from the CPU; make sure that write is visible to
+                // the acceleration-structure build before it reads the buffer.
+                var barrier = new MemoryBarrier
+                {
+                    SType = StructureType.MemoryBarrier,
+                    SrcAccessMask = AccessFlags.HostWriteBit, DstAccessMask = AccessFlags.AccelerationStructureWriteBitKhr,
+                };
+                _vk.CmdPipelineBarrier(cmd, PipelineStageFlags.HostBit, PipelineStageFlags.AccelerationStructureBuildBitKhr,
+                    0, 1, &barrier, 0, null, 0, null);
+                khrAs.CmdBuildAccelerationStructures(cmd, 1, &buildInfo, &pRange);
+            });
+
+            _vk.DestroyBuffer(_dev, tlasScratch, null);
+            _vk.FreeMemory(_dev, tlasScratchMem, null);
+            _vk.DestroyBuffer(_dev, instBuf, null);
+            _vk.FreeMemory(_dev, instMem, null);
+
+            _rtTlasBuf = tlasBuf;
+            _rtTlasMem = tlasMem;
+            _rtTlas = tlas;
+            (_rtInstDescBuf, _rtInstDescMem) = CreateHostBuffer<RtInstanceDesc>(instDescs, BufferUsageFlags.StorageBufferBit);
+            _rtSceneReady = true;
+
+            WriteRtAccelerationAndInstanceDescriptors();
+        }
+
+        private static AccelerationStructureGeometryKHR MakeBlasGeometry(ulong vAddr, ulong iAddr, uint maxVertex)
+        {
+            var triData = new AccelerationStructureGeometryTrianglesDataKHR
+            {
+                SType = StructureType.AccelerationStructureGeometryTrianglesDataKhr,
+                VertexFormat = Format.R32G32B32Sfloat,
+                VertexData = new DeviceOrHostAddressConstKHR { DeviceAddress = vAddr },
+                VertexStride = 56, // stride-14-float vertex (see AppendVertices/BuildVertexBuffer) = 56 bytes
+                MaxVertex = maxVertex,
+                IndexType = IndexType.Uint32,
+                IndexData = new DeviceOrHostAddressConstKHR { DeviceAddress = iAddr },
+            };
+            return new AccelerationStructureGeometryKHR
+            {
+                SType = StructureType.AccelerationStructureGeometryKhr,
+                GeometryType = GeometryTypeKHR.TrianglesKhr,
+                Geometry = new AccelerationStructureGeometryDataKHR { Triangles = triData },
+                Flags = GeometryFlagsKHR.OpaqueBitKhr,
+            };
+        }
+
+        private static AccelerationStructureGeometryKHR MakeTlasGeometry(ulong instAddr)
+        {
+            return new AccelerationStructureGeometryKHR
+            {
+                SType = StructureType.AccelerationStructureGeometryKhr,
+                GeometryType = GeometryTypeKHR.InstancesKhr,
+                Geometry = new AccelerationStructureGeometryDataKHR
+                {
+                    Instances = new AccelerationStructureGeometryInstancesDataKHR
+                    {
+                        SType = StructureType.AccelerationStructureGeometryInstancesDataKhr,
+                        ArrayOfPointers = false,
+                        Data = new DeviceOrHostAddressConstKHR { DeviceAddress = instAddr },
+                    },
+                },
+            };
+        }
+
+        private void DestroyRayTracingScene()
+        {
+            if (!_ctx.SupportsRayTracing)
+            {
+                return;
+            }
+            KhrAccelerationStructure? khrAs = _ctx.KhrAccelerationStructure;
+            foreach (RtBlas b in _rtBlas)
+            {
+                if (b.Handle.Handle != 0) khrAs!.DestroyAccelerationStructure(_dev, b.Handle, null);
+                if (b.Buffer.Handle != 0) { _vk.DestroyBuffer(_dev, b.Buffer, null); _vk.FreeMemory(_dev, b.Mem, null); }
+            }
+            _rtBlas.Clear();
+            if (_rtTlas.Handle != 0) { khrAs!.DestroyAccelerationStructure(_dev, _rtTlas, null); _rtTlas = default; }
+            if (_rtTlasBuf.Handle != 0) { _vk.DestroyBuffer(_dev, _rtTlasBuf, null); _vk.FreeMemory(_dev, _rtTlasMem, null); _rtTlasBuf = default; }
+            if (_rtInstDescBuf.Handle != 0) { _vk.DestroyBuffer(_dev, _rtInstDescBuf, null); _vk.FreeMemory(_dev, _rtInstDescMem, null); _rtInstDescBuf = default; }
+            _rtSceneReady = false;
+        }
+
+        private void WriteRtAccelerationAndInstanceDescriptors()
+        {
+            if (_rtDescSet.Handle == 0)
+            {
+                return;
+            }
+            var asHandle = _rtTlas;
+            var asWrite = new WriteDescriptorSetAccelerationStructureKHR
+            {
+                SType = StructureType.WriteDescriptorSetAccelerationStructureKhr,
+                AccelerationStructureCount = 1, PAccelerationStructures = &asHandle,
+            };
+            var instInfo = new DescriptorBufferInfo { Buffer = _rtInstDescBuf, Offset = 0, Range = Vk.WholeSize };
+            var writes = stackalloc WriteDescriptorSet[2];
+            writes[0] = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet, PNext = &asWrite, DstSet = _rtDescSet, DstBinding = 0,
+                DescriptorCount = 1, DescriptorType = DescriptorType.AccelerationStructureKhr,
+            };
+            writes[1] = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet, DstSet = _rtDescSet, DstBinding = 2,
+                DescriptorCount = 1, DescriptorType = DescriptorType.StorageBuffer, PBufferInfo = &instInfo,
+            };
+            _vk.UpdateDescriptorSets(_dev, 2, writes, 0, null);
+        }
+
+        private void WriteRtImageDescriptor()
+        {
+            if (_rtDescSet.Handle == 0 || _rtColorView.Handle == 0)
+            {
+                return;
+            }
+            var imgInfo = new DescriptorImageInfo { ImageLayout = ImageLayout.General, ImageView = _rtColorView };
+            var write = new WriteDescriptorSet
+            {
+                SType = StructureType.WriteDescriptorSet, DstSet = _rtDescSet, DstBinding = 1,
+                DescriptorCount = 1, DescriptorType = DescriptorType.StorageImage, PImageInfo = &imgInfo,
+            };
+            _vk.UpdateDescriptorSets(_dev, 1, &write, 0, null);
+        }
+
         private ShaderModule CreateShader(byte[] code)
         {
             fixed (byte* p = code)
@@ -1451,9 +2160,23 @@ namespace RaxicoreEditor.Editor.Rendering
             VulkanContext.Check(_vk.CreateBuffer(_dev, &bci, null, &buffer), "CreateBuffer");
 
             _vk.GetBufferMemoryRequirements(_dev, buffer, out MemoryRequirements req);
+            // A buffer created with ShaderDeviceAddressBit usage must be allocated with the matching
+            // DeviceAddressBit memory-allocate flag, regardless of whether this call site ever queries the
+            // address itself (VUID-vkBindBufferMemory-bufferDeviceAddress-03339) -- an acceleration
+            // structure's storage/scratch buffer needs the usage bit but is addressed via
+            // vkGetAccelerationStructureDeviceAddressKHR, not vkGetBufferDeviceAddress, so deriving this
+            // from the usage bits (not a separate "do you want the address back" parameter) is what the
+            // spec actually requires.
+            bool needsAddressFlag = (usage & BufferUsageFlags.ShaderDeviceAddressBit) != 0;
+            var allocFlags = new MemoryAllocateFlagsInfo
+            {
+                SType = StructureType.MemoryAllocateFlagsInfo,
+                Flags = MemoryAllocateFlags.DeviceAddressBit,
+            };
             var ai = new MemoryAllocateInfo
             {
                 SType = StructureType.MemoryAllocateInfo,
+                PNext = needsAddressFlag ? &allocFlags : null,
                 AllocationSize = req.Size,
                 MemoryTypeIndex = _ctx.FindMemoryType(req.MemoryTypeBits, props),
             };
@@ -1462,6 +2185,15 @@ namespace RaxicoreEditor.Editor.Rendering
             _vk.BindBufferMemory(_dev, buffer, mem, 0);
             return (buffer, mem);
         }
+
+        private ulong GetBufferAddress(Silk.NET.Vulkan.Buffer buf)
+        {
+            var info = new BufferDeviceAddressInfo { SType = StructureType.BufferDeviceAddressInfo, Buffer = buf };
+            return _vk.GetBufferDeviceAddress(_dev, &info);
+        }
+
+        private static ulong AlignUp(ulong value, ulong align) => (value + align - 1) / align * align;
+        private static uint AlignUp(uint value, uint align) => (uint)AlignUp((ulong)value, align);
 
         private (Silk.NET.Vulkan.Buffer, DeviceMemory) CreateHostBuffer<T>(T[] data, BufferUsageFlags usage)
             where T : unmanaged
@@ -1497,8 +2229,16 @@ namespace RaxicoreEditor.Editor.Rendering
             }
             _vk.UnmapMemory(_dev, stagingMem);
 
+            // When the GPU supports ray tracing, static geometry buffers also carry the flags an
+            // acceleration structure build needs (device address + AS build input) so
+            // BuildRayTracingScene can reference them directly with no separate RT-only copy. A no-op on
+            // buffers that never end up in a BLAS (translucent groups, skinned index buffers) -- an unused
+            // usage bit costs nothing.
+            BufferUsageFlags rtFlags = _ctx.SupportsRayTracing
+                ? BufferUsageFlags.ShaderDeviceAddressBit | BufferUsageFlags.AccelerationStructureBuildInputReadOnlyBitKhr
+                : 0;
             (Silk.NET.Vulkan.Buffer buffer, DeviceMemory mem) = CreateBuffer(size,
-                usage | BufferUsageFlags.TransferDstBit, MemoryPropertyFlags.DeviceLocalBit);
+                usage | BufferUsageFlags.TransferDstBit | rtFlags, MemoryPropertyFlags.DeviceLocalBit);
 
             OneTimeSubmit(cmd =>
             {
@@ -1604,6 +2344,8 @@ namespace RaxicoreEditor.Editor.Rendering
             if (_colorImage.Handle != 0) { _vk.DestroyImage(_dev, _colorImage, null); _vk.FreeMemory(_dev, _colorMem, null); _colorImage = default; }
             if (_depthImage.Handle != 0) { _vk.DestroyImage(_dev, _depthImage, null); _vk.FreeMemory(_dev, _depthMem, null); _depthImage = default; }
             if (_readback.Handle != 0) { _vk.DestroyBuffer(_dev, _readback, null); _vk.FreeMemory(_dev, _readbackMem, null); _readback = default; }
+            if (_rtColorView.Handle != 0) { _vk.DestroyImageView(_dev, _rtColorView, null); _rtColorView = default; }
+            if (_rtColorImage.Handle != 0) { _vk.DestroyImage(_dev, _rtColorImage, null); _vk.FreeMemory(_dev, _rtColorMem, null); _rtColorImage = default; }
         }
 
         public void Dispose()
@@ -1617,6 +2359,15 @@ namespace RaxicoreEditor.Editor.Rendering
             ClearSkeletonLines();
             ClearTrajectoryLines();
             DestroyTargets();
+            DestroyRayTracingScene();
+            if (_ctx.SupportsRayTracing)
+            {
+                if (_sbtBuffer.Handle != 0) { _vk.DestroyBuffer(_dev, _sbtBuffer, null); _vk.FreeMemory(_dev, _sbtMem, null); }
+                if (_rtDescPool.Handle != 0) _vk.DestroyDescriptorPool(_dev, _rtDescPool, null);
+                if (_rtPipeline.Handle != 0) _vk.DestroyPipeline(_dev, _rtPipeline, null);
+                if (_rtPipelineLayout.Handle != 0) _vk.DestroyPipelineLayout(_dev, _rtPipelineLayout, null);
+                if (_rtDescLayout.Handle != 0) _vk.DestroyDescriptorSetLayout(_dev, _rtDescLayout, null);
+            }
             if (_sampler.Handle != 0) _vk.DestroySampler(_dev, _sampler, null);
             if (_descLayout.Handle != 0) _vk.DestroyDescriptorSetLayout(_dev, _descLayout, null);
             if (_fence.Handle != 0) _vk.DestroyFence(_dev, _fence, null);

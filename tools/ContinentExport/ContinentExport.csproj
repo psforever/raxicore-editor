@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RaxicoreEditor.Tools.ContinentExport</RootNamespace>
+    <!-- Headless map-data exporter: reads the client's continent terrain mesh and emits per-continent
+         JSON (water / lava / land cells, facility layout, ground height) for any downstream consumer. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RaxicoreEditor.Generation\RaxicoreEditor.Generation.csproj" />
+  </ItemGroup>
+
+</Project>

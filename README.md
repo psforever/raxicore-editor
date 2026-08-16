@@ -23,7 +23,9 @@ content formats used by an engine-derived client.
 > **You need your own copy of the engine-derived game assets.** No game data is included or
 > distributed with this project.
 
-<img src="docs/assets/img/screenshot.png" alt="Raxicore Editor showing a continent — terrain, water, and scene objects in the 3D viewport, with the asset browser and inspector" width="900" />
+<img src="docs/assets/img/screenshot.png" alt="Raxicore Editor showing a continent — detail-textured terrain, water, scene objects and the procedural sky in the 3D viewport, with the asset browser and inspector" width="900" />
+
+<img src="docs/assets/img/screenshot-searhus-lava.png" alt="Raxicore Editor showing a whole continent from orbit — a volcanic island with lava pools in its caldera, ringed by mountains, roads and coastline" width="900" />
 
 <img src="docs/assets/img/animation.gif" alt="Raxicore Editor playing a skeletal animation in the 3D viewport, with keyframe transport and timeline scrubbing in the inspector" width="900" />
 

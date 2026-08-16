@@ -13,6 +13,7 @@ namespace RaxicoreEditor.Editor.Documents
         Animation,
         Database,
         Audio,
+        Generation,
         Unknown,
     }
 

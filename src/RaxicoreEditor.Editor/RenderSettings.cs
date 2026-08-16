@@ -37,6 +37,24 @@ namespace RaxicoreEditor.Editor
         /// the viewport each frame; toggling raises <see cref="Changed"/> for a lightweight re-render.</summary>
         public static bool Sky { get; set; } = false;
 
+        /// <summary>
+        /// Whether the current GPU/driver reports hardware ray tracing support (<see
+        /// cref="Rendering.VulkanContext.SupportsRayTracing"/>) -- gates whether the Render menu's Ray
+        /// Tracing item can be turned on at all. Set once, from the shared Vulkan context, the first time
+        /// any viewport initialises; false (and the menu item stays disabled) until then.
+        /// </summary>
+        public static bool RayTracingSupported { get; set; } = false;
+
+        /// <summary>
+        /// When true, the viewport renders via hardware ray tracing instead of rasterizing. Meaningless
+        /// when <see cref="RayTracingSupported"/> is false. EXPERIMENTAL, and deliberately opt-in: the
+        /// traced path covers opaque, non-skinned geometry only (see
+        /// <see cref="Rendering.MeshViewportRenderer"/>'s BuildRayTracingScene) -- skinned meshes,
+        /// translucent materials, the skeleton overlay and the procedural sky are not in the acceleration
+        /// structure, so a scene containing them renders incompletely with this on.
+        /// </summary>
+        public static bool RayTracing { get; set; } = false;
+
         /// <summary>Maximum viewport framerate in frames per second while the view is animating/being moved.
         /// <c>0</c> = uncapped (render as fast as the pipeline allows). The viewport paces frames to this
         /// rate; capping at (or below) the monitor's refresh avoids wasting GPU on frames the display never

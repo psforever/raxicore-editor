@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>RaxicoreEditor.Generation</RootNamespace>
+    <AssemblyName>RaxicoreEditor.Generation</AssemblyName>
+    <!-- Matches tools/ContinentExport and tools/ListRecords, whose logic lives here now: those two
+         opt back into implicit usings (System, System.Collections.Generic, System.IO, System.Linq,
+         ...) despite the Editor/EngineAssets projects' explicit-only house style. -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The generation logic behind the CLI export tools (tools/ContinentExport, tools/ListRecords)
+         and the Editor's "Generate" menu, shared between both so there is exactly one implementation
+         of each. Pure I/O and computation: no UI dependencies, so it stays usable headless. -->
+    <Description>Continent/facility export and record-inspection logic shared between the CLI tools and the Editor GUI.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RaxicoreEditor.EngineAssets\RaxicoreEditor.EngineAssets.csproj" />
+  </ItemGroup>
+
+</Project>

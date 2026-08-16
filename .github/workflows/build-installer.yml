@@ -1,12 +1,23 @@
 name: Build Installer
 
-# Builds the Windows installer. Runs on demand, and on a version tag (v*) it also attaches the
-# installer to the matching GitHub Release. The installer version is read from Directory.Build.props
-# (the single source of truth for the app version), so bumping the version there is all that's needed.
+# Builds the Windows installer. The installer version is read from Directory.Build.props (the single
+# source of truth for the app version), so bumping the version there is all that's needed.
+#
+# Runs on demand, on a version tag (v*), and on every push to main. What a run PUBLISHES depends on
+# which of those it was:
+#   - tag build   -> attaches the installer to that tag's GitHub Release, exactly as it always has.
+#   - main build  -> derives the tag from Directory.Build.props (v<VersionPrefix>-<VersionSuffix>) and
+#                    publishes ONLY if that tag does not exist yet. So the version bump is what cuts a
+#                    release: merge a bump and the release happens by itself; merge anything else and
+#                    the run just builds and uploads the artifact. Re-running never republishes.
+# The tag is created by the release step itself rather than pushed by a previous step, deliberately:
+# a tag pushed with the default GITHUB_TOKEN does NOT trigger tag-filtered workflows (GitHub blocks
+# that recursion), so building and publishing have to happen in the same run.
 
 on:
   workflow_dispatch:
   push:
+    branches: [ main ]
     tags: [ 'v*' ]
 
 permissions:
@@ -30,11 +41,41 @@ jobs:
           $props = Get-Content Directory.Build.props -Raw
           $version = [regex]::Match($props, '<VersionPrefix>([^<]+)</VersionPrefix>').Groups[1].Value
           $display = [regex]::Match($props, '<InformationalVersion>([^<]+)</InformationalVersion>').Groups[1].Value
+          $suffix = [regex]::Match($props, '<VersionSuffix>([^<]*)</VersionSuffix>').Groups[1].Value
           if (-not $version) { throw "VersionPrefix not found in Directory.Build.props" }
           if (-not $display) { $display = $version }
+          # Same shape as the tags already published: v0.1.0-beta, v0.2.0-beta.
+          $tag = if ($suffix) { "v$version-$suffix" } else { "v$version" }
           "version=$version" >> $env:GITHUB_OUTPUT
           "display=$display" >> $env:GITHUB_OUTPUT
-          Write-Host "App version: $version ($display)"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "App version: $version ($display), release tag would be $tag"
+
+      - name: Decide whether this run publishes
+        id: rel
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A tag build publishes to exactly the tag that triggered it -- unchanged behaviour.
+          if ($env:GITHUB_REF.StartsWith('refs/tags/v')) {
+            "publish=true" >> $env:GITHUB_OUTPUT
+            "tag=$env:GITHUB_REF_NAME" >> $env:GITHUB_OUTPUT
+            Write-Host "Tag build: publishing to $env:GITHUB_REF_NAME"
+            exit 0
+          }
+          # Anything else (main, workflow_dispatch) publishes only if the version in
+          # Directory.Build.props has no tag yet. Absent tag == version not released == publish.
+          $tag = "${{ steps.ver.outputs.tag }}"
+          gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            "publish=false" >> $env:GITHUB_OUTPUT
+            Write-Host "$tag already exists -- building the installer as an artifact only."
+          } else {
+            "publish=true" >> $env:GITHUB_OUTPUT
+            "tag=$tag" >> $env:GITHUB_OUTPUT
+            Write-Host "$tag does not exist yet -- this run will publish it."
+          }
 
       - name: Publish (win-x64, self-contained)
         run: >
@@ -65,11 +106,14 @@ jobs:
           path: RaxicoreEditor-Setup-*.exe
           if-no-files-found: error
 
-      - name: Attach to release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish to release
+        if: steps.rel.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          # Creating the release also creates this tag at the current commit when it doesn't exist,
+          # which is how a main build cuts its release without a separate tag push.
+          tag_name: ${{ steps.rel.outputs.tag }}
           files: RaxicoreEditor-Setup-*.exe
           # A tag with a pre-release suffix (e.g. v0.1.0-beta) publishes as a GitHub pre-release; a clean
           # tag (v1.0.0) publishes as a normal release.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.rel.outputs.tag, '-') }}

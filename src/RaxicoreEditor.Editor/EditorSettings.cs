@@ -23,6 +23,11 @@ namespace RaxicoreEditor.Editor
         /// <summary>Whether continents draw their procedural sky (see <see cref="RenderSettings.Sky"/>).</summary>
         public bool Sky { get; set; } = false;
 
+        /// <summary>Whether ray tracing is turned on (see <see cref="RenderSettings.RayTracing"/>). Only
+        /// takes effect on hardware that supports it; harmless to persist as true on a machine that
+        /// doesn't, since <see cref="RenderSettings.RayTracingSupported"/> gates the menu regardless.</summary>
+        public bool RayTracing { get; set; } = false;
+
         /// <summary>Viewport framerate cap in FPS (see <see cref="RenderSettings.FrameCap"/>). <c>0</c> =
         /// uncapped. Default uncapped so the viewport runs at the display's refresh out of the box.</summary>
         public int FrameRateCap { get; set; } = 0;

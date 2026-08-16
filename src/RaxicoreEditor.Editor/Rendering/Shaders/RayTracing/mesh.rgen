@@ -1,0 +1,42 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(binding = 0, set = 0) uniform accelerationStructureEXT tlas;
+layout(binding = 1, set = 0, rgba8) uniform image2D outImage;
+
+// Inverse of the SAME view-projection the rasterizer uses (model is always identity in this viewer --
+// see MeshViewportRenderer.Render's caller -- so mvp IS viewProj; no separate model to undo).
+layout(push_constant) uniform Push { mat4 invViewProj; } pc;
+
+layout(location = 0) rayPayloadEXT vec3 hitColor;
+
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    // This viewer's projection is reversed-Z (see MeshViewportRenderer's depth-clear/CompareOp.Greater
+    // setup): clip-space z=1 is the NEAR plane, z=0 is the FAR plane -- the opposite of the textbook [0
+    // near, 1 far] convention. That ordering isn't cosmetic here: traceRayEXT always resolves "closest
+    // hit" as the smallest t along the ray, so the ray's origin must actually be the near-plane point
+    // with the direction pointing toward the far plane. Getting this backwards (as an earlier version of
+    // this shader did) still produces geometrically valid intersections, but "closest hit" then resolves
+    // to whichever surface is nearest the FAR plane instead of the camera -- any nearer, occluding mesh
+    // silently loses that race and disappears wherever it overlaps something farther away.
+    vec4 nearH = pc.invViewProj * vec4(ndc, 1.0, 1.0);
+    vec4 farH  = pc.invViewProj * vec4(ndc, 0.0, 1.0);
+    vec3 nearP = nearH.xyz / nearH.w;
+    vec3 farP  = farH.xyz / farH.w;
+
+    vec3 origin = nearP;
+    vec3 dir = normalize(farP - nearP);
+
+    hitColor = vec3(0.0);
+    traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, origin, 0.001, dir, 10000.0, 0);
+
+    // outImage is a plain UNORM storage image (GLSL has no sRGB image format for imageStore), so the
+    // sRGB encode the rasterizer gets for free from its sRGB colour attachment has to happen by hand here
+    // -- same fix already applied elsewhere in this codebase (sky.frag) for the same underlying reason.
+    vec3 encoded = pow(max(hitColor, vec3(0.0)), vec3(1.0 / 2.2));
+    imageStore(outImage, pixel, vec4(encoded, 1.0));
+}

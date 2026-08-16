@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RaxicoreEditor.EngineAssets\RaxicoreEditor.EngineAssets.csproj" />
+    <ProjectReference Include="..\RaxicoreEditor.Generation\RaxicoreEditor.Generation.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,6 +30,7 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
     <PackageReference Include="ShadUI" Version="0.2.3" />
     <PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
+    <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
     <!-- Cross-platform WAV playback (Windows/macOS/Linux). MIT; its native backend is miniaudio
          (public domain / MIT-0). Bundles per-RID native binaries, so no build tooling is needed. -->
     <PackageReference Include="SoundFlow" Version="1.4.0" />
@@ -66,6 +68,17 @@
     <EmbeddedResource Include="Rendering/Shaders/EngineDerived/engine_blend.frag.spv">
       <LogicalName>engine_blend.frag.spv</LogicalName>
     </EmbeddedResource>
+    <!-- Ray tracing pipeline shaders (Render > Ray Tracing toggle), only loaded when the GPU/driver
+         reports VK_KHR_acceleration_structure + VK_KHR_ray_tracing_pipeline support. -->
+    <EmbeddedResource Include="Rendering/Shaders/RayTracing/mesh.rgen.spv">
+      <LogicalName>mesh.rgen.spv</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Rendering/Shaders/RayTracing/mesh.rmiss.spv">
+      <LogicalName>mesh.rmiss.spv</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Rendering/Shaders/RayTracing/mesh.rchit.spv">
+      <LogicalName>mesh.rchit.spv</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- The GLSL sources are kept beside the .spv for reference; not compiled at build time. -->
@@ -77,6 +90,9 @@
     <None Include="Rendering/Shaders/mesh_blend.frag" />
     <None Include="Rendering/Shaders/sky.vert" />
     <None Include="Rendering/Shaders/sky.frag" />
+    <None Include="Rendering/Shaders/RayTracing/mesh.rgen" />
+    <None Include="Rendering/Shaders/RayTracing/mesh.rmiss" />
+    <None Include="Rendering/Shaders/RayTracing/mesh.rchit" />
   </ItemGroup>
 
   <!-- GLSL translations of the engine-derived reference client's original per-material Cg shaders
