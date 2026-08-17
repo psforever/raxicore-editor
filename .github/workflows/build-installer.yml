@@ -73,8 +73,15 @@ jobs:
           # precisely what broke the first run of this automation: it printed the right decision and
           # exited 1 anyway. Clear the code, and end the step with an explicit `exit 0`, so this step's
           # success depends only on having reached a decision.
-          $sha = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha' 2>$null
+          # Existence is decided by gh's EXIT CODE, never by whether it printed anything: on a 404 gh
+          # writes its error body to STDOUT, so capturing output and testing it for emptiness reads the
+          # JSON {"message":"Not Found",...} as if it were a commit sha. That is the second way this
+          # step got it wrong -- it announced 'already released at {"message":"Not Found"...}' and
+          # skipped publishing on a tag that did not exist.
+          $out = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha' 2>$null
+          $tagExists = $LASTEXITCODE -eq 0
           $global:LASTEXITCODE = 0
+          $sha = if ($tagExists) { ($out | Select-Object -Last 1).ToString().Trim() } else { $null }
           if (-not $sha) {
             "publish=true" >> $env:GITHUB_OUTPUT
             "tag=$tag" >> $env:GITHUB_OUTPUT

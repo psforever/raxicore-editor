@@ -84,8 +84,13 @@ jobs:
           # step for why $LASTEXITCODE is cleared and the step ends in an explicit `exit 0`: a handled
           # `gh api` 404 would otherwise fail the step through the pwsh wrapper's `exit $LASTEXITCODE`.
           $tag = "${{ steps.ver.outputs.tag }}"
-          $sha = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha' 2>$null
+          # Existence comes from gh's EXIT CODE, not from whether it printed anything: on a 404 gh
+          # writes its error body to STDOUT, which an emptiness test misreads as a commit sha. See
+          # build-installer.yml for the full note.
+          $out = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha' 2>$null
+          $tagExists = $LASTEXITCODE -eq 0
           $global:LASTEXITCODE = 0
+          $sha = if ($tagExists) { ($out | Select-Object -Last 1).ToString().Trim() } else { $null }
           if (-not $sha) {
             "publish=true" >> $env:GITHUB_OUTPUT
             "tag=$tag" >> $env:GITHUB_OUTPUT
